@@ -38,8 +38,12 @@ export default function Home() {
     connectionError,
     connectionStatus,
     disconnect,
+    finalTranscripts,
+    interimTranscript,
     sendAudioChunk,
     sendControlMessage,
+    sttError,
+    sttStatus,
   } = useInterviewWebSocket(WEBSOCKET_URL);
 
   const stopRecording = useCallback(() => {
@@ -111,8 +115,9 @@ export default function Home() {
 
         mediaRecorderRef.current = null;
         setIsRecording(false);
-        sendControlMessage({ type: "session-stop" });
-        disconnect();
+        if (!sendControlMessage({ type: "session-stop" })) {
+          setRecordingError("Could not notify the audio server that recording stopped.");
+        }
       };
 
       if (!sendControlMessage({ type: "session-start", mimeType: selectedMimeType })) {
@@ -133,32 +138,47 @@ export default function Home() {
         sendControlMessage({ type: "session-stop" });
       }
 
+      disconnect();
       setRecordingError(getMicrophoneError(error));
     }
   }, [connect, disconnect, isRecording, sendAudioChunk, sendControlMessage]);
 
   useEffect(() => stopRecording, [stopRecording]);
 
-  const isStarting = connectionStatus === "connecting";
+  useEffect(() => {
+    if (
+      isRecording &&
+      (connectionStatus === "error" || sttStatus === "error" || sttStatus === "closed")
+    ) {
+      stopRecording();
+    }
+  }, [connectionStatus, isRecording, sttStatus, stopRecording]);
+
+  const isStarting = connectionStatus === "connecting" || sttStatus === "connecting";
   const statusLabel = connectionStatus.charAt(0).toUpperCase() + connectionStatus.slice(1);
+  const sttStatusLabel = sttStatus.charAt(0).toUpperCase() + sttStatus.slice(1);
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col justify-center px-6 py-16">
       <p className="text-sm font-semibold uppercase tracking-[0.2em] text-indigo-700">
-        Proof of concept · Milestone 2
+        Proof of concept · Milestone 3
       </p>
       <h1 className="mt-4 text-4xl font-bold tracking-tight text-slate-950 sm:text-5xl">
-        Browser Audio Streaming
+        Real-Time Speech-to-Text
       </h1>
       <p className="mt-5 max-w-2xl text-lg leading-8 text-slate-600">
-        Capture microphone audio in the browser and stream short binary chunks to the local Node.js server.
+        Stream microphone audio through the backend to Deepgram and view the live transcript.
       </p>
 
       <section className="mt-10 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <dl className="grid gap-4 sm:grid-cols-2">
           <div>
-            <dt className="text-sm font-medium text-slate-500">WebSocket</dt>
+            <dt className="text-sm font-medium text-slate-500">Backend WebSocket</dt>
             <dd className="mt-1 font-semibold text-slate-900">{statusLabel}</dd>
+          </div>
+          <div>
+            <dt className="text-sm font-medium text-slate-500">Deepgram STT</dt>
+            <dd className="mt-1 font-semibold text-slate-900">{sttStatusLabel}</dd>
           </div>
           <div>
             <dt className="text-sm font-medium text-slate-500">Recording</dt>
@@ -193,11 +213,44 @@ export default function Home() {
           </button>
         </div>
 
-        {(connectionError || recordingError) && (
+        {(connectionError || sttError || recordingError || (isRecording && sttStatus === "closed")) && (
           <p className="mt-5 rounded-lg bg-rose-50 p-3 text-sm text-rose-800" role="alert">
-            {recordingError ?? connectionError}
+            {recordingError ??
+              sttError ??
+              connectionError ??
+              "The transcription connection ended. Stop and start a new recording session."}
           </p>
         )}
+      </section>
+
+      <section
+        aria-live="polite"
+        className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+      >
+        <h2 className="text-lg font-semibold text-slate-900">Final transcript</h2>
+        {finalTranscripts.length > 0 ? (
+          <div className="mt-3 space-y-3">
+            {finalTranscripts.map((segment) => (
+              <p className="leading-7 text-slate-800" key={segment.id}>
+                {segment.text}
+                {segment.speechFinal && (
+                  <span className="ml-2 text-xs font-medium text-emerald-700">
+                    Utterance ended
+                  </span>
+                )}
+              </p>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-slate-500">Finalized speech will appear here.</p>
+        )}
+
+        <h3 className="mt-6 text-sm font-semibold uppercase tracking-wide text-indigo-700">
+          Interim transcript
+        </h3>
+        <p className="mt-2 min-h-7 italic text-slate-500">
+          {interimTranscript || "Listening for speech…"}
+        </p>
       </section>
     </main>
   );
