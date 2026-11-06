@@ -67,13 +67,14 @@ export default function Home() {
     answers,
     cancelAnswer,
     candidateContext,
+    candidateContextError,
+    candidateContextRevision,
+    candidateContextStatus,
     connectionError,
     connectionStatus,
     detectedQuestion,
-    disconnect,
     finalTranscripts,
     interimTranscript,
-    isCandidateContextSaved,
     questionDetectionStatus,
     saveCandidateContext,
     sendAudioChunk,
@@ -206,7 +207,6 @@ export default function Home() {
         return;
       }
 
-      disconnect();
       setRecordingStatus("idle");
       setRecordingError(
         microphoneRequested
@@ -216,7 +216,6 @@ export default function Home() {
     }
   }, [
     connect,
-    disconnect,
     recordingStatus,
     sendAudioChunk,
     sendControlMessage,
@@ -356,8 +355,10 @@ export default function Home() {
 
           <CandidateContextPanel
             context={candidateContext}
-            isSaved={isCandidateContextSaved}
+            error={candidateContextError}
+            key={candidateContextRevision}
             onSave={saveCandidateContext}
+            status={candidateContextStatus}
           />
         </div>
 

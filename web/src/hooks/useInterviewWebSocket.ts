@@ -20,6 +20,13 @@ export type CandidateContextInput = {
   jobDescription: string;
 };
 
+export type CandidateContextStatus =
+  | "empty"
+  | "unsaved"
+  | "saving"
+  | "saved"
+  | "error";
+
 export type GeneratedAnswer = {
   questionId: string;
   question: string;
@@ -83,7 +90,14 @@ type ServerMessage =
       reason: string;
       shouldTriggerAnswer: boolean;
     }
-  | { type: "context:saved" }
+  | {
+      type: "context:saved";
+      hasResume: boolean;
+      hasJobDescription: boolean;
+      resumeCharacters: number;
+      jobDescriptionCharacters: number;
+    }
+  | { type: "context:error"; code: string; message: string }
   | { type: "answer:start"; questionId: string; question: string; model: string; startedAt: number }
   | { type: "answer:token"; questionId: string; token: string }
   | { type: "answer:complete"; questionId: string; totalMs: number; timeToFirstTokenMs: number | null }
@@ -172,7 +186,27 @@ function isServerMessage(message: unknown): message is ServerMessage {
     return true;
   }
 
-  if (message.type === "context:saved") {
+  if (
+    message.type === "context:saved" &&
+    "hasResume" in message &&
+    typeof message.hasResume === "boolean" &&
+    "hasJobDescription" in message &&
+    typeof message.hasJobDescription === "boolean" &&
+    "resumeCharacters" in message &&
+    typeof message.resumeCharacters === "number" &&
+    "jobDescriptionCharacters" in message &&
+    typeof message.jobDescriptionCharacters === "number"
+  ) {
+    return true;
+  }
+
+  if (
+    message.type === "context:error" &&
+    "code" in message &&
+    typeof message.code === "string" &&
+    "message" in message &&
+    typeof message.message === "string"
+  ) {
     return true;
   }
 
@@ -239,7 +273,10 @@ export function useInterviewWebSocket(url: string) {
     resume: "",
     jobDescription: "",
   });
-  const [isCandidateContextSaved, setIsCandidateContextSaved] = useState(false);
+  const [candidateContextStatus, setCandidateContextStatus] =
+    useState<CandidateContextStatus>("empty");
+  const [candidateContextError, setCandidateContextError] = useState<string | null>(null);
+  const [candidateContextRevision, setCandidateContextRevision] = useState(0);
   const [answers, setAnswers] = useState<GeneratedAnswer[]>([]);
   const seenQuestionIdsRef = useRef(new Set<string>());
   const candidateContextRef = useRef<CandidateContextInput>(candidateContext);
@@ -253,6 +290,11 @@ export function useInterviewWebSocket(url: string) {
     }
 
     setConnectionStatus("disconnected");
+    candidateContextRef.current = { resume: "", jobDescription: "" };
+    setCandidateContext({ resume: "", jobDescription: "" });
+    setCandidateContextRevision((revision) => revision + 1);
+    setCandidateContextStatus("empty");
+    setCandidateContextError(null);
   }, []);
 
   const cancelAnswer = useCallback((questionId: string) => {
@@ -271,6 +313,19 @@ export function useInterviewWebSocket(url: string) {
 
     if (existingSocket?.readyState === WebSocket.CONNECTING) {
       return Promise.resolve(false);
+    }
+
+    if (
+      existingSocket &&
+      (existingSocket.readyState === WebSocket.CLOSING ||
+        existingSocket.readyState === WebSocket.CLOSED)
+    ) {
+      socketRef.current = null;
+      candidateContextRef.current = { resume: "", jobDescription: "" };
+      setCandidateContext({ resume: "", jobDescription: "" });
+      setCandidateContextRevision((revision) => revision + 1);
+      setCandidateContextStatus("empty");
+      setCandidateContextError(null);
     }
 
     setConnectionStatus("connecting");
@@ -297,13 +352,14 @@ export function useInterviewWebSocket(url: string) {
 
         setConnectionStatus("connected");
         setConnectionError(null);
+        setCandidateContextStatus("saving");
+        setCandidateContextError(null);
         socket.send(
           JSON.stringify({
             type: "context:update",
             ...candidateContextRef.current,
           }),
         );
-        setIsCandidateContextSaved(false);
         finish(true);
       };
 
@@ -391,7 +447,14 @@ export function useInterviewWebSocket(url: string) {
             });
             break;
           case "context:saved":
-            setIsCandidateContextSaved(true);
+            setCandidateContextStatus(
+              message.hasResume || message.hasJobDescription ? "saved" : "empty",
+            );
+            setCandidateContextError(null);
+            break;
+          case "context:error":
+            setCandidateContextStatus("error");
+            setCandidateContextError(message.message);
             break;
           case "answer:start":
             setAnswers((previous) => [
@@ -461,6 +524,11 @@ export function useInterviewWebSocket(url: string) {
           setConnectionError(`Audio server connection closed (code ${event.code}).`);
         }
 
+        candidateContextRef.current = { resume: "", jobDescription: "" };
+        setCandidateContext({ resume: "", jobDescription: "" });
+        setCandidateContextRevision((revision) => revision + 1);
+        setCandidateContextStatus("empty");
+        setCandidateContextError(null);
         finish(false);
       };
     });
@@ -469,10 +537,17 @@ export function useInterviewWebSocket(url: string) {
   const saveCandidateContext = useCallback((context: CandidateContextInput) => {
     candidateContextRef.current = context;
     setCandidateContext(context);
-    setIsCandidateContextSaved(false);
+    setCandidateContextRevision((revision) => revision + 1);
+    setCandidateContextStatus(
+      context.resume.trim() || context.jobDescription.trim() ? "unsaved" : "saving",
+    );
+    setCandidateContextError(null);
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "context:update", ...context }));
+      setCandidateContextStatus("saving");
+    } else if (!context.resume.trim() && !context.jobDescription.trim()) {
+      setCandidateContextStatus("empty");
     }
   }, []);
 
@@ -516,13 +591,15 @@ export function useInterviewWebSocket(url: string) {
     answers,
     cancelAnswer,
     candidateContext,
+    candidateContextError,
+    candidateContextRevision,
+    candidateContextStatus,
     connectionError,
     connectionStatus,
     detectedQuestion,
     disconnect,
     finalTranscripts,
     interimTranscript,
-    isCandidateContextSaved,
     questionDetectionStatus,
     saveCandidateContext,
     sendAudioChunk,

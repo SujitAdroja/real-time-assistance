@@ -15,10 +15,12 @@ import {
   createGroqAnswerService,
   type GroqAnswerService,
 } from "./services/groq-answer.service.js";
-import type {
-  CandidateContext,
-  ConversationTurn,
-} from "./services/prompt-builder.service.js";
+import {
+  CandidateContextValidationError,
+  InterviewSessionMemory,
+  rememberAfterSuccessfulGeneration,
+} from "./services/interview-session-memory.service.js";
+import { resolveFollowUpQuestion } from "./services/follow-up-resolver.service.js";
 
 dotenv.config({ path: resolve(__dirname, "../.env") });
 
@@ -28,8 +30,7 @@ const server = createServer(app);
 const webSocketServer = new WebSocketServer({ server, path: "/ws" });
 const MAX_PENDING_AUDIO_BYTES = 5 * 1024 * 1024;
 const MAX_ACTIVE_ANSWERS = 2;
-const MAX_RECENT_CONVERSATION_TURNS = 4;
-const MAX_CONTEXT_CHARS = 15_000;
+const MAX_ANSWERED_QUESTION_IDS = 512;
 const DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b";
 
 let groqAnswerService: GroqAnswerService | null = null;
@@ -51,12 +52,7 @@ webSocketServer.on("connection", (socket, request) => {
   let pendingAudioBytes = 0;
   let finalTranscriptId = 0;
   let questionDetectionSession: QuestionDetectionSession | null = null;
-  let candidateContext: CandidateContext = {
-    resume: "",
-    jobDescription: "",
-    recentConversation: [],
-  };
-  const recentConversation: ConversationTurn[] = [];
+  const sessionMemory = new InterviewSessionMemory();
   const answerControllers = new Map<string, AbortController>();
   const answeredQuestionIds = new Set<string>();
 
@@ -103,18 +99,31 @@ webSocketServer.on("connection", (socket, request) => {
   const generateAnswer = async (question: {
     id: string;
     text: string;
+    category: string;
   }): Promise<void> => {
     if (answeredQuestionIds.has(question.id)) {
       return;
     }
 
     answeredQuestionIds.add(question.id);
+    if (answeredQuestionIds.size > MAX_ANSWERED_QUESTION_IDS) {
+      const oldestQuestionId = answeredQuestionIds.values().next().value;
+      if (oldestQuestionId !== undefined) {
+        answeredQuestionIds.delete(oldestQuestionId);
+      }
+    }
+
     const model = process.env.GROQ_MODEL?.trim() || DEFAULT_GROQ_MODEL;
     const startedAt = Date.now();
     const controller = new AbortController();
     let answer = "";
     let firstTokenAt: number | null = null;
     answerControllers.set(question.id, controller);
+    const context = sessionMemory.getAnswerContext();
+    const followUp = resolveFollowUpQuestion(
+      question.text,
+      context.recentConversation,
+    );
 
     send({
       type: "answer:start",
@@ -133,28 +142,36 @@ webSocketServer.on("connection", (socket, request) => {
       }
 
       const service = getGroqAnswerService();
-      await service.streamAnswer({
-        question: question.text,
-        context: {
-          resume: candidateContext.resume,
-          jobDescription: candidateContext.jobDescription,
-          recentConversation: [...recentConversation],
+      await rememberAfterSuccessfulGeneration(
+        sessionMemory,
+        {
+          questionId: question.id,
+          question: question.text,
+          topic: question.category,
+          getAnswer: () => answer,
+          shouldRemember: () => isConnected && !controller.signal.aborted,
         },
-        signal: controller.signal,
-        onToken: (token) => {
-          if (!isConnected || controller.signal.aborted) {
-            return;
-          }
+        () =>
+          service.streamAnswer({
+            question: question.text,
+            context,
+            followUp,
+            signal: controller.signal,
+            onToken: (token) => {
+              if (!isConnected || controller.signal.aborted) {
+                return;
+              }
 
-          firstTokenAt ??= Date.now();
-          answer += token;
-          send({
-            type: "answer:token",
-            questionId: question.id,
-            token,
-          });
-        },
-      });
+              firstTokenAt ??= Date.now();
+              answer += token;
+              send({
+                type: "answer:token",
+                questionId: question.id,
+                token,
+              });
+            },
+          }),
+      );
 
       if (controller.signal.aborted || !isConnected) {
         return;
@@ -168,12 +185,6 @@ webSocketServer.on("connection", (socket, request) => {
         timeToFirstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt,
       });
 
-      if (answer) {
-        recentConversation.push({ question: question.text, answer });
-        if (recentConversation.length > MAX_RECENT_CONVERSATION_TURNS) {
-          recentConversation.splice(0, recentConversation.length - MAX_RECENT_CONVERSATION_TURNS);
-        }
-      }
     } catch (error) {
       if (controller.signal.aborted || !isConnected) {
         return;
@@ -295,7 +306,11 @@ webSocketServer.on("connection", (socket, request) => {
       (event) => {
         send(event);
         if (event.type === "question:detected") {
-          void generateAnswer({ id: event.id, text: event.text });
+          void generateAnswer({
+            id: event.id,
+            text: event.text,
+            category: event.category,
+          });
         }
       },
     );
@@ -398,12 +413,22 @@ webSocketServer.on("connection", (socket, request) => {
           });
         }
       } else if (message.type === "context:update") {
-        candidateContext = {
-          resume: message.resume.slice(0, MAX_CONTEXT_CHARS),
-          jobDescription: message.jobDescription.slice(0, MAX_CONTEXT_CHARS),
-          recentConversation,
-        };
-        send({ type: "context:saved" });
+        try {
+          send({
+            type: "context:saved",
+            ...sessionMemory.updateCandidateContext(message),
+          });
+        } catch (error) {
+          if (error instanceof CandidateContextValidationError) {
+            send({
+              type: "context:error",
+              code: "invalid_context",
+              message: error.message,
+            });
+          } else {
+            throw error;
+          }
+        }
       } else if (message.type === "session-start") {
         sessionFailed = false;
         void startSession(message.mimeType);
@@ -427,6 +452,8 @@ webSocketServer.on("connection", (socket, request) => {
       controller.abort();
     }
     answerControllers.clear();
+    sessionMemory.clear();
+    answeredQuestionIds.clear();
     void stopSession();
     console.log(
       `WebSocket client disconnected (code ${code}): ${reason.toString() || "no reason"}`,

@@ -1,8 +1,10 @@
 import Groq from "groq-sdk";
 import {
   buildAnswerPrompt,
+  PromptBuildError,
   type CandidateContext,
 } from "./prompt-builder.service.js";
+import type { FollowUpInterpretation } from "./follow-up-resolver.service.js";
 
 export type AnswerErrorCode =
   | "configuration"
@@ -27,6 +29,7 @@ export interface GroqAnswerService {
   streamAnswer(input: {
     question: string;
     context: CandidateContext;
+    followUp?: FollowUpInterpretation | null;
     signal: AbortSignal;
     onToken: (token: string) => void;
   }): Promise<void>;
@@ -64,7 +67,7 @@ export function createGroqAnswerService(
   };
 
   return {
-    async streamAnswer({ question, context, signal, onToken }) {
+    async streamAnswer({ question, context, followUp, signal, onToken }) {
       if (signal.aborted) {
         throw new AnswerGenerationError("cancelled", "Answer generation was cancelled.");
       }
@@ -75,7 +78,7 @@ export function createGroqAnswerService(
         const stream = await client.chat.completions.create(
           {
             model,
-            messages: buildAnswerPrompt(question, context),
+            messages: buildAnswerPrompt(question, context, followUp ?? null),
             stream: true,
             max_completion_tokens: 220,
             temperature: 0.3,
@@ -106,6 +109,10 @@ export function createGroqAnswerService(
 export function toAnswerGenerationError(error: unknown): AnswerGenerationError {
   if (error instanceof AnswerGenerationError) {
     return error;
+  }
+
+  if (error instanceof PromptBuildError) {
+    return new AnswerGenerationError("provider", error.message);
   }
 
   if (error instanceof Groq.RateLimitError) {

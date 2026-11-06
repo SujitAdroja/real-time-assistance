@@ -176,7 +176,7 @@ Test the error and context scenarios by temporarily using an invalid Groq key (r
 - `prompt-builder.service.ts` keeps prompt construction separate. The system message specifies first-person, concise, accurate answers, STAR for behavioral questions, and explicitly treats resume/JD/history as untrusted reference data. A separate user message contains the question and bounded candidate context.
 - `groq-answer.service.ts` uses the official `groq-sdk`, validates the model against the account's model list, requests `stream: true`, and forwards each text delta immediately. Groq's `GROQ_API_KEY` never leaves the backend.
 - `answer:start` identifies the question before generation; each token and terminal event includes the same `questionId`. The client stores answer state by that ID, so concurrent streams cannot mix.
-- Recent conversation is limited to the last four completed question/answer pairs per WebSocket session. Resume and job description are bounded in size and held in memory only.
+- Recent conversation is bounded per WebSocket session. Only history identified as relevant to a follow-up is sent to Groq; resume and job description are bounded and held in memory only.
 - The server reports time to first token and total generation duration. The first-token measurement includes any uncached model-list validation.
 
 The rules and prompt reduce fabrication but do not guarantee factual answers; model output still needs review. This POC uses simple in-memory session state, has no durable resume storage, and allows at most two concurrent answers per client connection. A later iteration could add stronger context validation, richer persistence controls, model evaluations, and user feedback. This module does not add answer history storage, database infrastructure, or RAG.
@@ -222,3 +222,25 @@ npm --prefix web run lint
 ```
 
 The dashboard does not add another WebSocket, answer-generation path, or persistence layer. It presents the existing session protocol and Module 1–5 services; live microphone, Deepgram, and Groq behavior still requires manual verification with working credentials and browser permissions.
+
+## Milestone 7: candidate context and conversation memory
+
+The existing Candidate Context section accepts resume and job-description text, reports its save/empty/error state, and can clear the saved text. The backend validates each field against a 15,000-character limit; empty fields are allowed and clear the corresponding reference. Context changes take effect for the next answer on that same WebSocket session. Inputs are never logged or truncated silently at save time.
+
+Each WebSocket connection owns an isolated `InterviewSessionMemory`. It stores up to eight completed, non-empty Q&A turns with question ID, original question, answer, completion timestamp, and detected category. Duplicate question IDs are ignored, failed or empty answer generations are not stored, and the memory is cleared when that WebSocket connection ends. Stopping microphone capture closes the Deepgram stream but leaves the WebSocket interview session alive, so a pause and restart can retain its context and completed turns. Reconnecting creates a fresh session; the browser clears old context rather than reapplying stale data.
+
+The follow-up resolver recognizes short/contextual forms such as “Why?”, “What are its disadvantages?”, “How did you implement that?”, and “Can you explain further?” only when completed history is available. It supplies up to the two most recent completed exchanges and a tentative interpretation. Standalone questions receive no previous exchanges. The prompt asks Groq to clarify unresolved references instead of guessing.
+
+Context limits are applied at two stages: each stored resume/JD field is limited to 15,000 characters, while prompt reference budgets cap resume at 8,000 characters, job description at 6,000, each history field at 1,000, and relevant history at two exchanges. The complete system-plus-user prompt is capped at 24,000 characters. Truncated reference text includes an explicit notice. The current question is never silently truncated; empty questions and questions over 2,000 characters receive an answer error instead.
+
+Run the automated checks:
+
+```bash
+npm --prefix server test
+npm run build:server
+npm --prefix web run lint
+./web/node_modules/.bin/tsc --noEmit --project web/tsconfig.json
+npm run build:web
+```
+
+For manual verification, save resume/JD text before or during a live session and confirm the save status. Ask a question supported by the resume, then a short follow-up such as “What are its disadvantages?” and verify the prior exchange informs that answer. Ask an unrelated standalone question and confirm old exchange text is not added as relevant history. Clear context and verify the empty status; disconnect/reload and confirm context does not carry into the new WebSocket session.
