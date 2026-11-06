@@ -1,7 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AnswerPanel } from "@/components/AnswerPanel";
+import { CandidateContextPanel } from "@/components/CandidateContextPanel";
 import { DetectedQuestionPanel } from "@/components/DetectedQuestionPanel";
+import { RecordingControls, type RecordingStatus } from "@/components/RecordingControls";
+import { StatusIndicator } from "@/components/StatusIndicator";
+import { TranscriptPanel } from "@/components/TranscriptPanel";
 import { useInterviewWebSocket } from "@/hooks/useInterviewWebSocket";
 
 const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:4000/ws";
@@ -28,31 +33,62 @@ function getMicrophoneError(error: unknown): string {
   return "Unable to start microphone recording. Check the browser console for details.";
 }
 
+function getStatusTone(status: string): "success" | "warning" | "error" | "neutral" {
+  if (status === "connected" || status === "ready") {
+    return "success";
+  }
+
+  if (status === "connecting") {
+    return "warning";
+  }
+
+  if (status === "error") {
+    return "error";
+  }
+
+  return "neutral";
+}
+
+function formatStatus(status: string): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
 export default function Home() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
+  const startOperationRef = useRef(0);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>("idle");
+  const [sessionDurationSeconds, setSessionDurationSeconds] = useState(0);
   const [recordingError, setRecordingError] = useState<string | null>(null);
   const [recordingMimeType, setRecordingMimeType] = useState<string | null>(null);
   const {
     connect,
+    answers,
+    cancelAnswer,
+    candidateContext,
     connectionError,
     connectionStatus,
     detectedQuestion,
     disconnect,
     finalTranscripts,
     interimTranscript,
+    isCandidateContextSaved,
     questionDetectionStatus,
+    saveCandidateContext,
     sendAudioChunk,
     sendControlMessage,
     sttError,
     sttStatus,
   } = useInterviewWebSocket(WEBSOCKET_URL);
+  const isRecording = recordingStatus === "recording";
+  const isConnecting = connectionStatus === "connecting" || recordingStatus === "starting";
 
   const stopRecording = useCallback(() => {
     const mediaRecorder = mediaRecorderRef.current;
 
     if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      setRecordingStatus("stopping");
       mediaRecorder.stop();
       return;
     }
@@ -60,33 +96,51 @@ export default function Home() {
     stopMediaStream(mediaStreamRef.current);
     mediaStreamRef.current = null;
     mediaRecorderRef.current = null;
-    setIsRecording(false);
+    if (recordingStartedAtRef.current !== null) {
+      setSessionDurationSeconds(
+        Math.floor((Date.now() - recordingStartedAtRef.current) / 1000),
+      );
+    }
+    recordingStartedAtRef.current = null;
+    setRecordingStatus("idle");
   }, []);
 
   const startRecording = useCallback(async () => {
-    if (mediaRecorderRef.current || isRecording) {
+    if (mediaRecorderRef.current || recordingStatus !== "idle") {
       return;
     }
 
+    const operationId = ++startOperationRef.current;
+    let stream: MediaStream | null = null;
+    let sessionStarted = false;
+    let microphoneRequested = false;
+    setRecordingStatus("starting");
     setRecordingError(null);
+    setSessionDurationSeconds(0);
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setRecordingError("This browser does not support microphone capture.");
+      setRecordingStatus("idle");
       return;
     }
-
-    const connected = await connect();
-
-    if (!connected) {
-      setRecordingError("Connect to the audio server before recording.");
-      return;
-    }
-
-    let stream: MediaStream | null = null;
-    let sessionStarted = false;
 
     try {
+      const connected = await connect();
+      if (operationId !== startOperationRef.current) {
+        return;
+      }
+
+      if (!connected) {
+        throw new Error("The audio server connection is unavailable.");
+      }
+
+      microphoneRequested = true;
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (operationId !== startOperationRef.current) {
+        stopMediaStream(stream);
+        return;
+      }
+
       const mimeType = PREFERRED_MIME_TYPES.find((type) =>
         MediaRecorder.isTypeSupported(type),
       );
@@ -100,7 +154,7 @@ export default function Home() {
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0 && !sendAudioChunk(event.data)) {
-          setRecordingError("Audio server connection was lost. Stop and start recording again.");
+          setRecordingError("The audio connection was lost. Stop and reconnect before trying again.");
         }
       };
 
@@ -117,9 +171,15 @@ export default function Home() {
         }
 
         mediaRecorderRef.current = null;
-        setIsRecording(false);
+        if (recordingStartedAtRef.current !== null) {
+          setSessionDurationSeconds(
+            Math.floor((Date.now() - recordingStartedAtRef.current) / 1000),
+          );
+        }
+        recordingStartedAtRef.current = null;
+        setRecordingStatus("idle");
         if (!sendControlMessage({ type: "session-stop" })) {
-          setRecordingError("Could not notify the audio server that recording stopped.");
+          setRecordingError("The audio connection closed before the session could stop cleanly.");
         }
       };
 
@@ -130,7 +190,8 @@ export default function Home() {
       sessionStarted = true;
       mediaRecorder.start(CHUNK_INTERVAL_MS);
       setRecordingMimeType(selectedMimeType);
-      setIsRecording(true);
+      recordingStartedAtRef.current = Date.now();
+      setRecordingStatus("recording");
     } catch (error) {
       console.error("Failed to start recording:", error);
       stopMediaStream(stream);
@@ -141,124 +202,171 @@ export default function Home() {
         sendControlMessage({ type: "session-stop" });
       }
 
-      disconnect();
-      setRecordingError(getMicrophoneError(error));
-    }
-  }, [connect, disconnect, isRecording, sendAudioChunk, sendControlMessage]);
+      if (operationId !== startOperationRef.current) {
+        return;
+      }
 
-  useEffect(() => stopRecording, [stopRecording]);
+      disconnect();
+      setRecordingStatus("idle");
+      setRecordingError(
+        microphoneRequested
+          ? getMicrophoneError(error)
+          : "Could not connect to the audio server. Check that the backend is running and try again.",
+      );
+    }
+  }, [
+    connect,
+    disconnect,
+    recordingStatus,
+    sendAudioChunk,
+    sendControlMessage,
+  ]);
+
+  useEffect(() => {
+    const connectionTimer = window.setTimeout(() => {
+      void connect();
+    }, 0);
+
+    return () => window.clearTimeout(connectionTimer);
+  }, [connect]);
+
+  useEffect(() => {
+    if (!isRecording) {
+      return;
+    }
+
+    const updateDuration = () => {
+      const startedAt = recordingStartedAtRef.current;
+      if (startedAt !== null) {
+        setSessionDurationSeconds(Math.floor((Date.now() - startedAt) / 1000));
+      }
+    };
+    const timerId = window.setInterval(updateDuration, 250);
+    return () => window.clearInterval(timerId);
+  }, [isRecording]);
 
   useEffect(() => {
     if (
       isRecording &&
-      (connectionStatus === "error" || sttStatus === "error" || sttStatus === "closed")
+      (connectionStatus === "error" ||
+        connectionStatus === "disconnected" ||
+        sttStatus === "error" ||
+        sttStatus === "closed")
     ) {
       stopRecording();
     }
   }, [connectionStatus, isRecording, sttStatus, stopRecording]);
 
-  const isStarting = connectionStatus === "connecting" || sttStatus === "connecting";
-  const statusLabel = connectionStatus.charAt(0).toUpperCase() + connectionStatus.slice(1);
-  const sttStatusLabel = sttStatus.charAt(0).toUpperCase() + sttStatus.slice(1);
+  useEffect(
+    () => () => {
+      startOperationRef.current += 1;
+      stopRecording();
+    },
+    [stopRecording],
+  );
+
+  const canStart = recordingStatus === "idle" && connectionStatus !== "connecting";
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col justify-center px-6 py-16">
-      <p className="text-sm font-semibold uppercase tracking-[0.2em] text-indigo-700">
-        Proof of concept · Milestone 4
-      </p>
-      <h1 className="mt-4 text-4xl font-bold tracking-tight text-slate-950 sm:text-5xl">
-        Real-Time Interview Assistant
-      </h1>
-      <p className="mt-5 max-w-2xl text-lg leading-8 text-slate-600">
-        Stream microphone audio through the backend to Deepgram and view the live transcript.
-      </p>
-
-      <section className="mt-10 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <dl className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <dt className="text-sm font-medium text-slate-500">Backend WebSocket</dt>
-            <dd className="mt-1 font-semibold text-slate-900">{statusLabel}</dd>
-          </div>
-          <div>
-            <dt className="text-sm font-medium text-slate-500">Deepgram STT</dt>
-            <dd className="mt-1 font-semibold text-slate-900">{sttStatusLabel}</dd>
-          </div>
-          <div>
-            <dt className="text-sm font-medium text-slate-500">Recording</dt>
-            <dd className="mt-1 font-semibold text-slate-900">
-              {isRecording ? "Recording" : "Stopped"}
-            </dd>
-          </div>
-          {recordingMimeType && (
-            <div className="sm:col-span-2">
-              <dt className="text-sm font-medium text-slate-500">Captured format</dt>
-              <dd className="mt-1 font-mono text-sm text-slate-900">{recordingMimeType}</dd>
+    <main className="min-h-screen bg-slate-50 text-slate-900">
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+          <div className="flex items-center gap-3">
+            <span
+              aria-hidden="true"
+              className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-700 text-sm font-bold tracking-wide text-white shadow-sm"
+            >
+              IA
+            </span>
+            <div>
+              <p className="text-sm font-bold tracking-tight text-slate-950">
+                Interview Assistant
+              </p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Real-time interview workspace
+              </p>
             </div>
-          )}
-        </dl>
+          </div>
 
-        <div className="mt-6 flex flex-wrap gap-3">
-          <button
-            className="rounded-lg bg-indigo-700 px-4 py-2 font-semibold text-white transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-            disabled={isRecording || isStarting}
-            onClick={startRecording}
-            type="button"
-          >
-            {isStarting ? "Connecting…" : "Start recording"}
-          </button>
-          <button
-            className="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400"
-            disabled={!isRecording}
-            onClick={stopRecording}
-            type="button"
-          >
-            Stop recording
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <StatusIndicator
+              label="Backend"
+              status={formatStatus(connectionStatus)}
+              tone={getStatusTone(connectionStatus)}
+            />
+            <StatusIndicator
+              label="Transcription"
+              status={formatStatus(sttStatus)}
+              tone={getStatusTone(sttStatus)}
+            />
+          </div>
         </div>
+      </header>
 
-        {(connectionError || sttError || recordingError || (isRecording && sttStatus === "closed")) && (
-          <p className="mt-5 rounded-lg bg-rose-50 p-3 text-sm text-rose-800" role="alert">
-            {recordingError ??
+      <div className="mx-auto max-w-7xl px-4 py-7 sm:px-6 sm:py-9 lg:px-8">
+        <section className="mb-6 flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-700">
+              Interview session
+            </p>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
+              Your live interview workspace
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+              Follow the conversation, review detected questions, and see suggested answers as they stream.
+            </p>
+          </div>
+          <p className="max-w-sm text-xs leading-5 text-slate-500">
+            Keep this dashboard open during your practice session. Audio and answer generation are handled by your backend.
+          </p>
+        </section>
+
+        <div className="space-y-6">
+          <RecordingControls
+            canStart={canStart}
+            durationSeconds={sessionDurationSeconds}
+            error={
+              recordingError ??
               sttError ??
               connectionError ??
-              "The transcription connection ended. Stop and start a new recording session."}
+              (isRecording && sttStatus === "closed"
+                ? "The transcription session ended. Stop and start a new recording session."
+                : null)
+            }
+            mimeType={recordingMimeType}
+            onStart={() => void startRecording()}
+            onStop={stopRecording}
+            status={recordingStatus}
+          />
+
+          <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+            <TranscriptPanel
+              interimTranscript={interimTranscript}
+              segments={finalTranscripts}
+            />
+
+            <div className="space-y-6">
+              <DetectedQuestionPanel
+                question={detectedQuestion}
+                status={questionDetectionStatus}
+              />
+              <AnswerPanel answers={answers} onCancel={cancelAnswer} />
+            </div>
+          </div>
+
+          <CandidateContextPanel
+            context={candidateContext}
+            isSaved={isCandidateContextSaved}
+            onSave={saveCandidateContext}
+          />
+        </div>
+
+        {isConnecting && (
+          <p aria-live="polite" className="sr-only">
+            Connecting to the interview session.
           </p>
         )}
-      </section>
-
-      <section
-        aria-live="polite"
-        className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
-      >
-        <h2 className="text-lg font-semibold text-slate-900">Final transcript</h2>
-        {finalTranscripts.length > 0 ? (
-          <div className="mt-3 space-y-3">
-            {finalTranscripts.map((segment) => (
-              <p className="leading-7 text-slate-800" key={segment.id}>
-                {segment.text}
-                {segment.speechFinal && (
-                  <span className="ml-2 text-xs font-medium text-emerald-700">
-                    Utterance ended
-                  </span>
-                )}
-              </p>
-            ))}
-          </div>
-        ) : (
-          <p className="mt-3 text-slate-500">Finalized speech will appear here.</p>
-        )}
-
-        <h3 className="mt-6 text-sm font-semibold uppercase tracking-wide text-indigo-700">
-          Interim transcript
-        </h3>
-        <p className="mt-2 min-h-7 italic text-slate-500">
-          {interimTranscript || "Listening for speech…"}
-        </p>
-      </section>
-      <DetectedQuestionPanel
-        question={detectedQuestion}
-        status={questionDetectionStatus}
-      />
+      </div>
     </main>
   );
 }

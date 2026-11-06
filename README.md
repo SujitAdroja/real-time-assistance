@@ -39,7 +39,7 @@ To change the backend port, copy `server/.env.example` to `server/.env` and set 
 
 ## Verify the setup
 
-With both applications running, open <http://localhost:3000> and confirm the setup page loads. In another terminal, request the backend health endpoint:
+With both applications running, open <http://localhost:3000> and confirm the interview dashboard loads. In another terminal, request the backend health endpoint:
 
 ```bash
 curl http://localhost:4000/health
@@ -128,4 +128,97 @@ To manually verify the integrated pipeline, start the backend and frontend using
 
 This POC uses explainable patterns rather than an LLM; nuanced, compound, or context-dependent questions can be misclassified. Future improvements could add labeled evaluation examples, better utterance splitting, and optionally an LLM fallback for only ambiguous completed utterances. No answer generation is included.
 
+## Module 5: Groq streaming answer generation
+
+The backend starts answer generation directly when Module 4 emits `question:detected`. Groq's official Node.js SDK streams chat completion deltas to the backend, which sends `answer:start`, `answer:token`, `answer:complete`, or `answer:error` events to the same browser WebSocket. Every answer event carries its `questionId`. The backend checks the configured model against the models available to the API key before its first completion request; the actual streaming request also validates that the model supports chat streaming.
+
+### Configure Groq
+
+The API key is backend-only. Edit `server/.env` and add these entries without replacing your existing Deepgram settings:
+
+```env
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=openai/gpt-oss-20b
+```
+
+`GROQ_MODEL` is optional at runtime and defaults to `openai/gpt-oss-20b`; setting it explicitly makes the selected model clear. The selected default appears in Groq's current model/SDK documentation and is used here instead of deprecated Llama models. The backend checks whether the selected ID is returned for the configured key. Model availability and streaming access depend on Groq account permissions. If Groq does not list this model for your key, choose an active chat-completion model from [Groq's models list](https://console.groq.com/docs/models) that supports streaming and set its exact model ID in `GROQ_MODEL`.
+
+Never put `GROQ_API_KEY` in `web/.env.local`, a `NEXT_PUBLIC_` variable, source code, or a committed file. `server/.env` is ignored by Git. Candidate context is entered in the dashboard and kept in the backend process memory only for the lifetime of that WebSocket connection; it is not saved to disk.
+
+### Run and verify
+
+Install the new backend dependency and start the backend and frontend in separate terminals from the project root:
+
+```bash
+npm --prefix server install
+npm run dev:server
+```
+
+```bash
+npm run dev:web
+```
+
+Open <http://localhost:3000>. Optionally expand **Candidate context**, paste resume and job description text, and click **Save context**. Start recording, ask a complete interview question and pause. The detected-question panel should show the question; the answer panel should show **Generating answer…** and append streamed text. Ask another question and confirm its answer stays associated with its own question ID.
+
+Run the local tests and checks:
+
+```bash
+npm --prefix server test
+npm run build:server
+npm run build:web
+npm --prefix web run lint
+```
+
+Test the error and context scenarios by temporarily using an invalid Groq key (restore the real key afterward), exceeding account rate limits if possible, and asking a question that is not supported by the resume. Errors should be shown for the corresponding answer only. The prompt tells the model not to invent personal experience and to explain a concept honestly when resume evidence is missing. Disconnecting the browser cancels in-progress requests. The UI also provides **Cancel answer** for an individual request. Groq request timeout is 30 seconds, automatic retries are disabled, and output is limited to 220 completion tokens.
+
+### How the implementation works
+
+- `prompt-builder.service.ts` keeps prompt construction separate. The system message specifies first-person, concise, accurate answers, STAR for behavioral questions, and explicitly treats resume/JD/history as untrusted reference data. A separate user message contains the question and bounded candidate context.
+- `groq-answer.service.ts` uses the official `groq-sdk`, validates the model against the account's model list, requests `stream: true`, and forwards each text delta immediately. Groq's `GROQ_API_KEY` never leaves the backend.
+- `answer:start` identifies the question before generation; each token and terminal event includes the same `questionId`. The client stores answer state by that ID, so concurrent streams cannot mix.
+- Recent conversation is limited to the last four completed question/answer pairs per WebSocket session. Resume and job description are bounded in size and held in memory only.
+- The server reports time to first token and total generation duration. The first-token measurement includes any uncached model-list validation.
+
+The rules and prompt reduce fabrication but do not guarantee factual answers; model output still needs review. This POC uses simple in-memory session state, has no durable resume storage, and allows at most two concurrent answers per client connection. A later iteration could add stronger context validation, richer persistence controls, model evaluations, and user feedback. This module does not add answer history storage, database infrastructure, or RAG.
+
+### Interview questions about Module 5
+
+1. **Why stream completions?** Streaming lets the UI render answer text as Groq generates it rather than waiting for the full response.
+2. **Why call Groq from the backend?** It keeps the API key out of browser code and lets the server control prompts, limits, and cancellation.
+3. **What does the Prompt Builder do?** It creates separate system instructions and user reference data with explicit limits and trust boundaries.
+4. **Why are resume and job description in the user message?** They are task-specific reference inputs, not authority to replace the system's behavior instructions.
+5. **How is personal experience protected from fabrication?** The prompt makes the resume the source of truth and requires a transparent conceptual answer when experience is absent.
+6. **How are tokens correlated with an answer?** Every start, token, completion, and error event carries the detected question's ID.
+7. **How are concurrent answers handled?** The backend keeps separate controllers per question ID and caps active requests; the frontend updates each answer by ID.
+8. **How are rate limits and invalid credentials handled?** SDK errors are mapped into safe `answer:error` messages; automatic retries are disabled to avoid hidden delays.
+9. **How is time to first token measured?** The backend records a timestamp when the first non-empty streamed content arrives and compares it with request start.
+10. **What are the main trade-offs?** In-memory context is simple but temporary, rule-based question detection can be wrong, and prompt instructions cannot guarantee a model never hallucinates.
+
 Build either app with `npm run build:web` or `npm run build:server` from the project root.
+
+## Milestone 6: interview dashboard
+
+The dashboard uses one shared WebSocket connection managed by `useInterviewWebSocket`. The header shows backend and transcription status; the recording card starts/stops the existing microphone session and displays its elapsed time and audio format. The responsive workspace places the accumulated final/interim transcript beside the latest detected question and streamed answers. Transcript auto-scroll pauses when the viewer scrolls up. Completed answers can be copied from the answer panel.
+
+Start the applications in separate terminals from the project root:
+
+```bash
+npm run dev:server
+```
+
+```bash
+npm run dev:web
+```
+
+Open <http://localhost:3000>. Verify the Backend indicator connects, start and stop a microphone session, and confirm the timer and recording status update. Speak a complete interview question and confirm that the transcript, detected-question panel, and matching streamed answer update without refreshing. Scroll up in a longer transcript to confirm new text does not force the view back to the bottom. Use **Copy answer** after generation completes. For failure handling, deny microphone permission or stop the backend and confirm the dashboard shows a readable error while remaining usable.
+
+Run the available automated checks:
+
+```bash
+npm --prefix server test
+npm run build:server
+npm run build:web
+npm --prefix web run lint
+```
+
+The dashboard does not add another WebSocket, answer-generation path, or persistence layer. It presents the existing session protocol and Module 1–5 services; live microphone, Deepgram, and Groq behavior still requires manual verification with working credentials and browser permissions.

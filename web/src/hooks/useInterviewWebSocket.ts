@@ -15,6 +15,22 @@ type SessionStopMessage = {
 
 type ControlMessage = SessionStartMessage | SessionStopMessage;
 
+export type CandidateContextInput = {
+  resume: string;
+  jobDescription: string;
+};
+
+export type GeneratedAnswer = {
+  questionId: string;
+  question: string;
+  model: string;
+  content: string;
+  status: "generating" | "complete" | "error" | "cancelled";
+  error: string | null;
+  timeToFirstTokenMs: number | null;
+  totalMs: number | null;
+};
+
 export type TranscriptSegment = {
   id: string;
   text: string;
@@ -66,7 +82,12 @@ type ServerMessage =
       classification: QuestionClassification;
       reason: string;
       shouldTriggerAnswer: boolean;
-    };
+    }
+  | { type: "context:saved" }
+  | { type: "answer:start"; questionId: string; question: string; model: string; startedAt: number }
+  | { type: "answer:token"; questionId: string; token: string }
+  | { type: "answer:complete"; questionId: string; totalMs: number; timeToFirstTokenMs: number | null }
+  | { type: "answer:error"; questionId: string; code: string; message: string };
 
 type SttStatus = "disconnected" | "connecting" | "ready" | "closed" | "error";
 const QUESTION_CATEGORIES: readonly QuestionCategory[] = [
@@ -139,7 +160,7 @@ function isServerMessage(message: unknown): message is ServerMessage {
     return true;
   }
 
-  return (
+  if (
     message.type === "question:status" &&
     "classification" in message &&
     isOneOf(message.classification, QUESTION_CLASSIFICATIONS) &&
@@ -147,6 +168,58 @@ function isServerMessage(message: unknown): message is ServerMessage {
     typeof message.reason === "string" &&
     "shouldTriggerAnswer" in message &&
     typeof message.shouldTriggerAnswer === "boolean"
+  ) {
+    return true;
+  }
+
+  if (message.type === "context:saved") {
+    return true;
+  }
+
+  if (
+    message.type === "answer:start" &&
+    "questionId" in message &&
+    typeof message.questionId === "string" &&
+    "question" in message &&
+    typeof message.question === "string" &&
+    "model" in message &&
+    typeof message.model === "string" &&
+    "startedAt" in message &&
+    typeof message.startedAt === "number"
+  ) {
+    return true;
+  }
+
+  if (
+    message.type === "answer:token" &&
+    "questionId" in message &&
+    typeof message.questionId === "string" &&
+    "token" in message &&
+    typeof message.token === "string"
+  ) {
+    return true;
+  }
+
+  if (
+    message.type === "answer:complete" &&
+    "questionId" in message &&
+    typeof message.questionId === "string" &&
+    "totalMs" in message &&
+    typeof message.totalMs === "number" &&
+    "timeToFirstTokenMs" in message &&
+    (typeof message.timeToFirstTokenMs === "number" || message.timeToFirstTokenMs === null)
+  ) {
+    return true;
+  }
+
+  return (
+    message.type === "answer:error" &&
+    "questionId" in message &&
+    typeof message.questionId === "string" &&
+    "code" in message &&
+    typeof message.code === "string" &&
+    "message" in message &&
+    typeof message.message === "string"
   );
 }
 
@@ -162,7 +235,14 @@ export function useInterviewWebSocket(url: string) {
   const [detectedQuestion, setDetectedQuestion] = useState<DetectedQuestion | null>(null);
   const [questionDetectionStatus, setQuestionDetectionStatus] =
     useState<QuestionDetectionStatus | null>(null);
+  const [candidateContext, setCandidateContext] = useState<CandidateContextInput>({
+    resume: "",
+    jobDescription: "",
+  });
+  const [isCandidateContextSaved, setIsCandidateContextSaved] = useState(false);
+  const [answers, setAnswers] = useState<GeneratedAnswer[]>([]);
   const seenQuestionIdsRef = useRef(new Set<string>());
+  const candidateContextRef = useRef<CandidateContextInput>(candidateContext);
 
   const disconnect = useCallback(() => {
     const socket = socketRef.current;
@@ -173,6 +253,13 @@ export function useInterviewWebSocket(url: string) {
     }
 
     setConnectionStatus("disconnected");
+  }, []);
+
+  const cancelAnswer = useCallback((questionId: string) => {
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "answer:cancel", questionId }));
+    }
   }, []);
 
   const connect = useCallback((): Promise<boolean> => {
@@ -202,17 +289,39 @@ export function useInterviewWebSocket(url: string) {
       };
 
       socket.onopen = () => {
+        if (socketRef.current !== socket) {
+          socket.close(1000, "Connection superseded");
+          finish(false);
+          return;
+        }
+
         setConnectionStatus("connected");
+        setConnectionError(null);
+        socket.send(
+          JSON.stringify({
+            type: "context:update",
+            ...candidateContextRef.current,
+          }),
+        );
+        setIsCandidateContextSaved(false);
         finish(true);
       };
 
       socket.onerror = () => {
+        if (socketRef.current !== socket) {
+          return;
+        }
+
         setConnectionStatus("error");
         setConnectionError("Unable to connect to the audio server.");
         finish(false);
       };
 
       socket.onmessage = (event) => {
+        if (socketRef.current !== socket) {
+          return;
+        }
+
         let message: unknown;
 
         try {
@@ -281,6 +390,60 @@ export function useInterviewWebSocket(url: string) {
               shouldTriggerAnswer: message.shouldTriggerAnswer,
             });
             break;
+          case "context:saved":
+            setIsCandidateContextSaved(true);
+            break;
+          case "answer:start":
+            setAnswers((previous) => [
+              {
+                questionId: message.questionId,
+                question: message.question,
+                model: message.model,
+                content: "",
+                status: "generating",
+                error: null,
+                timeToFirstTokenMs: null,
+                totalMs: null,
+              },
+              ...previous.filter((answer) => answer.questionId !== message.questionId),
+            ]);
+            break;
+          case "answer:token":
+            setAnswers((previous) =>
+              previous.map((answer) =>
+                answer.questionId === message.questionId && answer.status === "generating"
+                  ? { ...answer, content: answer.content + message.token }
+                  : answer,
+              ),
+            );
+            break;
+          case "answer:complete":
+            setAnswers((previous) =>
+              previous.map((answer) =>
+                answer.questionId === message.questionId
+                  ? {
+                      ...answer,
+                      status: "complete",
+                      timeToFirstTokenMs: message.timeToFirstTokenMs,
+                      totalMs: message.totalMs,
+                    }
+                  : answer,
+              ),
+            );
+            break;
+          case "answer:error":
+            setAnswers((previous) =>
+              previous.map((answer) =>
+                answer.questionId === message.questionId
+                  ? {
+                      ...answer,
+                      status: message.code === "cancelled" ? "cancelled" : "error",
+                      error: message.message,
+                    }
+                  : answer,
+              ),
+            );
+            break;
         }
       };
 
@@ -303,6 +466,16 @@ export function useInterviewWebSocket(url: string) {
     });
   }, [url]);
 
+  const saveCandidateContext = useCallback((context: CandidateContextInput) => {
+    candidateContextRef.current = context;
+    setCandidateContext(context);
+    setIsCandidateContextSaved(false);
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "context:update", ...context }));
+    }
+  }, []);
+
   const sendControlMessage = useCallback((message: ControlMessage): boolean => {
     const socket = socketRef.current;
 
@@ -318,6 +491,7 @@ export function useInterviewWebSocket(url: string) {
       setDetectedQuestion(null);
       setQuestionDetectionStatus(null);
       seenQuestionIdsRef.current.clear();
+      setAnswers([]);
     }
 
     socket.send(JSON.stringify(message));
@@ -339,13 +513,18 @@ export function useInterviewWebSocket(url: string) {
 
   return {
     connect,
+    answers,
+    cancelAnswer,
+    candidateContext,
     connectionError,
     connectionStatus,
     detectedQuestion,
     disconnect,
     finalTranscripts,
     interimTranscript,
+    isCandidateContextSaved,
     questionDetectionStatus,
+    saveCandidateContext,
     sendAudioChunk,
     sendControlMessage,
     sttError,

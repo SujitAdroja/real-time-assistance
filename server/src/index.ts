@@ -10,6 +10,15 @@ import {
   type DeepgramSessionEvent,
 } from "./services/deepgram.service.js";
 import { QuestionDetectionSession } from "./services/question-detection-session.js";
+import {
+  AnswerGenerationError,
+  createGroqAnswerService,
+  type GroqAnswerService,
+} from "./services/groq-answer.service.js";
+import type {
+  CandidateContext,
+  ConversationTurn,
+} from "./services/prompt-builder.service.js";
 
 dotenv.config({ path: resolve(__dirname, "../.env") });
 
@@ -18,6 +27,13 @@ const port = Number(process.env.PORT ?? 4000);
 const server = createServer(app);
 const webSocketServer = new WebSocketServer({ server, path: "/ws" });
 const MAX_PENDING_AUDIO_BYTES = 5 * 1024 * 1024;
+const MAX_ACTIVE_ANSWERS = 2;
+const MAX_RECENT_CONVERSATION_TURNS = 4;
+const MAX_CONTEXT_CHARS = 15_000;
+const DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b";
+
+let groqAnswerService: GroqAnswerService | null = null;
+let groqServiceConfig: { apiKey: string; model: string } | null = null;
 
 app.get("/health", (_request, response) => {
   response.json({ status: "ok", service: "interview-assistant-server" });
@@ -35,6 +51,14 @@ webSocketServer.on("connection", (socket, request) => {
   let pendingAudioBytes = 0;
   let finalTranscriptId = 0;
   let questionDetectionSession: QuestionDetectionSession | null = null;
+  let candidateContext: CandidateContext = {
+    resume: "",
+    jobDescription: "",
+    recentConversation: [],
+  };
+  const recentConversation: ConversationTurn[] = [];
+  const answerControllers = new Map<string, AbortController>();
+  const answeredQuestionIds = new Set<string>();
 
   console.log(`WebSocket client connected: ${clientAddress}`);
 
@@ -52,6 +76,123 @@ webSocketServer.on("connection", (socket, request) => {
   const clearPendingAudio = () => {
     pendingAudio = [];
     pendingAudioBytes = 0;
+  };
+
+  const getGroqAnswerService = (): GroqAnswerService => {
+    const apiKey = process.env.GROQ_API_KEY?.trim();
+    if (!apiKey) {
+      throw new AnswerGenerationError(
+        "configuration",
+        "Groq is not configured. Set GROQ_API_KEY in server/.env and restart the backend.",
+      );
+    }
+
+    const model = process.env.GROQ_MODEL?.trim() || DEFAULT_GROQ_MODEL;
+    if (
+      !groqAnswerService ||
+      groqServiceConfig?.apiKey !== apiKey ||
+      groqServiceConfig?.model !== model
+    ) {
+      groqAnswerService = createGroqAnswerService(apiKey, model);
+      groqServiceConfig = { apiKey, model };
+    }
+
+    return groqAnswerService;
+  };
+
+  const generateAnswer = async (question: {
+    id: string;
+    text: string;
+  }): Promise<void> => {
+    if (answeredQuestionIds.has(question.id)) {
+      return;
+    }
+
+    answeredQuestionIds.add(question.id);
+    const model = process.env.GROQ_MODEL?.trim() || DEFAULT_GROQ_MODEL;
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    let answer = "";
+    let firstTokenAt: number | null = null;
+    answerControllers.set(question.id, controller);
+
+    send({
+      type: "answer:start",
+      questionId: question.id,
+      question: question.text,
+      model,
+      startedAt,
+    });
+
+    try {
+      if (answerControllers.size > MAX_ACTIVE_ANSWERS) {
+        throw new AnswerGenerationError(
+          "provider",
+          "Too many answers are being generated at once. Wait for one to finish.",
+        );
+      }
+
+      const service = getGroqAnswerService();
+      await service.streamAnswer({
+        question: question.text,
+        context: {
+          resume: candidateContext.resume,
+          jobDescription: candidateContext.jobDescription,
+          recentConversation: [...recentConversation],
+        },
+        signal: controller.signal,
+        onToken: (token) => {
+          if (!isConnected || controller.signal.aborted) {
+            return;
+          }
+
+          firstTokenAt ??= Date.now();
+          answer += token;
+          send({
+            type: "answer:token",
+            questionId: question.id,
+            token,
+          });
+        },
+      });
+
+      if (controller.signal.aborted || !isConnected) {
+        return;
+      }
+
+      const totalMs = Date.now() - startedAt;
+      send({
+        type: "answer:complete",
+        questionId: question.id,
+        totalMs,
+        timeToFirstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt,
+      });
+
+      if (answer) {
+        recentConversation.push({ question: question.text, answer });
+        if (recentConversation.length > MAX_RECENT_CONVERSATION_TURNS) {
+          recentConversation.splice(0, recentConversation.length - MAX_RECENT_CONVERSATION_TURNS);
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted || !isConnected) {
+        return;
+      }
+
+      const generationError =
+        error instanceof AnswerGenerationError
+          ? error
+          : new AnswerGenerationError("provider", "Groq answer generation failed.");
+      console.error("Groq answer generation failed:", generationError.message);
+      send({
+        type: "answer:error",
+        questionId: question.id,
+        code: generationError.code,
+        message: generationError.message,
+      });
+    } finally {
+      answerControllers.delete(question.id);
+    }
   };
 
   const stopSession = async () => {
@@ -151,7 +292,12 @@ webSocketServer.on("connection", (socket, request) => {
     finalTranscriptId = 0;
     questionDetectionSession = new QuestionDetectionSession(
       String(generation),
-      (event) => send(event),
+      (event) => {
+        send(event);
+        if (event.type === "question:detected") {
+          void generateAnswer({ id: event.id, text: event.text });
+        }
+      },
     );
 
     console.log(`Starting Deepgram session for audio MIME type: ${mimeType}`);
@@ -234,13 +380,31 @@ webSocketServer.on("connection", (socket, request) => {
         return;
       }
 
-      const message = parseControlMessage(data);
+      const message = parseClientMessage(data);
       if (!message) {
         sendSttError("Invalid WebSocket control message.");
         return;
       }
 
-      if (message.type === "session-start") {
+      if (message.type === "answer:cancel") {
+        const controller = answerControllers.get(message.questionId);
+        if (controller && !controller.signal.aborted) {
+          controller.abort();
+          send({
+            type: "answer:error",
+            questionId: message.questionId,
+            code: "cancelled",
+            message: "Answer generation was cancelled.",
+          });
+        }
+      } else if (message.type === "context:update") {
+        candidateContext = {
+          resume: message.resume.slice(0, MAX_CONTEXT_CHARS),
+          jobDescription: message.jobDescription.slice(0, MAX_CONTEXT_CHARS),
+          recentConversation,
+        };
+        send({ type: "context:saved" });
+      } else if (message.type === "session-start") {
         sessionFailed = false;
         void startSession(message.mimeType);
       } else {
@@ -259,6 +423,10 @@ webSocketServer.on("connection", (socket, request) => {
 
   socket.on("close", (code, reason) => {
     isConnected = false;
+    for (const controller of answerControllers.values()) {
+      controller.abort();
+    }
+    answerControllers.clear();
     void stopSession();
     console.log(
       `WebSocket client disconnected (code ${code}): ${reason.toString() || "no reason"}`,
@@ -270,11 +438,13 @@ webSocketServer.on("error", (error) => {
   console.error("WebSocket server error:", error);
 });
 
-type ControlMessage =
+type ClientMessage =
   | { type: "session-start"; mimeType: string }
-  | { type: "session-stop" };
+  | { type: "session-stop" }
+  | { type: "context:update"; resume: string; jobDescription: string }
+  | { type: "answer:cancel"; questionId: string };
 
-function parseControlMessage(data: RawData): ControlMessage | null {
+function parseClientMessage(data: RawData): ClientMessage | null {
   let message: unknown;
 
   try {
@@ -294,6 +464,28 @@ function parseControlMessage(data: RawData): ControlMessage | null {
 
   if (message.type === "session-stop") {
     return { type: "session-stop" };
+  }
+
+  if (
+    message.type === "answer:cancel" &&
+    "questionId" in message &&
+    typeof message.questionId === "string"
+  ) {
+    return { type: "answer:cancel", questionId: message.questionId };
+  }
+
+  if (
+    message.type === "context:update" &&
+    "resume" in message &&
+    typeof message.resume === "string" &&
+    "jobDescription" in message &&
+    typeof message.jobDescription === "string"
+  ) {
+    return {
+      type: "context:update",
+      resume: message.resume,
+      jobDescription: message.jobDescription,
+    };
   }
 
   if (
