@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import {
   CompletedUtterancePipeline,
   type FinalizedSegment,
@@ -27,7 +28,7 @@ export class QuestionDetectionSession {
   constructor(
     private readonly sessionId: string,
     private readonly emit: (event: QuestionDetectionEvent) => void,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = () => performance.timeOrigin + performance.now(),
   ) {}
 
   addFinalSegment(segment: FinalizedSegment): void {

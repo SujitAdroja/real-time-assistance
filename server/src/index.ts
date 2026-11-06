@@ -5,6 +5,11 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import type { RawData } from "ws";
 import {
+  AnswerQuestionDeduplicator,
+  cancelActiveAnswers,
+  runAnswerPipeline,
+} from "./services/answer-pipeline.service.js";
+import {
   createDeepgramSession,
   type DeepgramSession,
   type DeepgramSessionEvent,
@@ -18,9 +23,7 @@ import {
 import {
   CandidateContextValidationError,
   InterviewSessionMemory,
-  rememberAfterSuccessfulGeneration,
 } from "./services/interview-session-memory.service.js";
-import { resolveFollowUpQuestion } from "./services/follow-up-resolver.service.js";
 
 dotenv.config({ path: resolve(__dirname, "../.env") });
 
@@ -30,7 +33,6 @@ const server = createServer(app);
 const webSocketServer = new WebSocketServer({ server, path: "/ws" });
 const MAX_PENDING_AUDIO_BYTES = 5 * 1024 * 1024;
 const MAX_ACTIVE_ANSWERS = 2;
-const MAX_ANSWERED_QUESTION_IDS = 512;
 const DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b";
 
 let groqAnswerService: GroqAnswerService | null = null;
@@ -48,13 +50,14 @@ webSocketServer.on("connection", (socket, request) => {
   let startupController: AbortController | null = null;
   let sessionClosing = false;
   let sessionFailed = false;
+  let audioReceived = false;
   let pendingAudio: Buffer[] = [];
   let pendingAudioBytes = 0;
   let finalTranscriptId = 0;
   let questionDetectionSession: QuestionDetectionSession | null = null;
   const sessionMemory = new InterviewSessionMemory();
   const answerControllers = new Map<string, AbortController>();
-  const answeredQuestionIds = new Set<string>();
+  const answeredQuestionIds = new AnswerQuestionDeduplicator();
 
   console.log(`WebSocket client connected: ${clientAddress}`);
 
@@ -100,113 +103,66 @@ webSocketServer.on("connection", (socket, request) => {
     id: string;
     text: string;
     category: string;
+    detectedAt: number;
   }): Promise<void> => {
-    if (answeredQuestionIds.has(question.id)) {
+    if (!answeredQuestionIds.claim(question.id)) {
       return;
     }
 
-    answeredQuestionIds.add(question.id);
-    if (answeredQuestionIds.size > MAX_ANSWERED_QUESTION_IDS) {
-      const oldestQuestionId = answeredQuestionIds.values().next().value;
-      if (oldestQuestionId !== undefined) {
-        answeredQuestionIds.delete(oldestQuestionId);
-      }
-    }
-
     const model = process.env.GROQ_MODEL?.trim() || DEFAULT_GROQ_MODEL;
-    const startedAt = Date.now();
     const controller = new AbortController();
-    let answer = "";
-    let firstTokenAt: number | null = null;
     answerControllers.set(question.id, controller);
-    const context = sessionMemory.getAnswerContext();
-    const followUp = resolveFollowUpQuestion(
-      question.text,
-      context.recentConversation,
-    );
-
-    send({
-      type: "answer:start",
-      questionId: question.id,
-      question: question.text,
+    await runAnswerPipeline({
+      question: {
+        id: question.id,
+        text: question.text,
+        category: question.category,
+        completedAt: question.detectedAt,
+      },
+      memory: sessionMemory,
+      getService: getGroqAnswerService,
       model,
-      startedAt,
+      signal: controller.signal,
+      validate: () => {
+        if (answerControllers.size > MAX_ACTIVE_ANSWERS) {
+          throw new AnswerGenerationError(
+            "provider",
+            "Too many answers are being generated at once. Wait for one to finish.",
+          );
+        }
+      },
+      emit: (event) => {
+        if (!isConnected || controller.signal.aborted) {
+          return;
+        }
+        if (event.type === "answer:error") {
+          console.error("Groq answer generation failed:", event.message);
+        }
+        if (event.type === "answer:complete") {
+          send({
+            ...event,
+            totalMs: event.totalResponseTimeMs,
+            timeToFirstTokenMs: event.firstTokenLatencyMs,
+          });
+        } else {
+          send(event);
+        }
+      },
     });
 
-    try {
-      if (answerControllers.size > MAX_ACTIVE_ANSWERS) {
-        throw new AnswerGenerationError(
-          "provider",
-          "Too many answers are being generated at once. Wait for one to finish.",
-        );
-      }
-
-      const service = getGroqAnswerService();
-      await rememberAfterSuccessfulGeneration(
-        sessionMemory,
-        {
-          questionId: question.id,
-          question: question.text,
-          topic: question.category,
-          getAnswer: () => answer,
-          shouldRemember: () => isConnected && !controller.signal.aborted,
-        },
-        () =>
-          service.streamAnswer({
-            question: question.text,
-            context,
-            followUp,
-            signal: controller.signal,
-            onToken: (token) => {
-              if (!isConnected || controller.signal.aborted) {
-                return;
-              }
-
-              firstTokenAt ??= Date.now();
-              answer += token;
-              send({
-                type: "answer:token",
-                questionId: question.id,
-                token,
-              });
-            },
-          }),
-      );
-
-      if (controller.signal.aborted || !isConnected) {
-        return;
-      }
-
-      const totalMs = Date.now() - startedAt;
-      send({
-        type: "answer:complete",
-        questionId: question.id,
-        totalMs,
-        timeToFirstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt,
-      });
-
-    } catch (error) {
-      if (controller.signal.aborted || !isConnected) {
-        return;
-      }
-
-      const generationError =
-        error instanceof AnswerGenerationError
-          ? error
-          : new AnswerGenerationError("provider", "Groq answer generation failed.");
-      console.error("Groq answer generation failed:", generationError.message);
-      send({
-        type: "answer:error",
-        questionId: question.id,
-        code: generationError.code,
-        message: generationError.message,
-      });
-    } finally {
+    if (answerControllers.get(question.id) === controller) {
       answerControllers.delete(question.id);
     }
   };
 
   const stopSession = async () => {
+    cancelActiveAnswers(
+      answerControllers,
+      (event) => send(event),
+      "Answer generation was cancelled because the recording session stopped.",
+    );
+    answerControllers.clear();
+
     const pendingStart = startupController;
     startupController = null;
     if (pendingStart) {
@@ -223,7 +179,10 @@ webSocketServer.on("connection", (socket, request) => {
       try {
         await activeSession.close();
       } catch (error) {
-        console.error("Failed to close Deepgram session:", error);
+        console.error(
+          "Failed to close Deepgram session:",
+          error instanceof Error ? error.name : "UnknownError",
+        );
         sendSttError("The backend could not close the Deepgram session cleanly.");
       } finally {
         sessionClosing = false;
@@ -270,7 +229,10 @@ webSocketServer.on("connection", (socket, request) => {
     }
 
     if (event.type === "error") {
-      console.error("Deepgram live transcription error:", event.error);
+      console.error(
+        "Deepgram live transcription error:",
+        event.error instanceof Error ? event.error.name : "UnknownError",
+      );
       sendSttError(
         "Deepgram reported an error. Verify the API key and network connection; see the backend logs for details.",
       );
@@ -299,17 +261,26 @@ webSocketServer.on("connection", (socket, request) => {
     const generation = ++sessionGeneration;
     const controller = new AbortController();
     const sessionRef: { current: DeepgramSession | null } = { current: null };
+    audioReceived = false;
     startupController = controller;
     finalTranscriptId = 0;
     questionDetectionSession = new QuestionDetectionSession(
       String(generation),
       (event) => {
+        // A close flush must not start a new answer after stop or STT failure.
+        if (
+          event.type === "question:detected" &&
+          (sessionClosing || sessionFailed)
+        ) {
+          return;
+        }
         send(event);
         if (event.type === "question:detected") {
           void generateAnswer({
             id: event.id,
             text: event.text,
             category: event.category,
+            detectedAt: event.detectedAt,
           });
         }
       },
@@ -356,7 +327,10 @@ webSocketServer.on("connection", (socket, request) => {
 
       startupController = null;
       clearPendingAudio();
-      console.error("Failed to start Deepgram session:", error);
+      console.error(
+        "Failed to start Deepgram session:",
+        error instanceof Error ? error.name : "UnknownError",
+      );
       sendSttError(
         "Could not connect to Deepgram. Check DEEPGRAM_API_KEY, account access, and backend logs.",
       );
@@ -371,6 +345,9 @@ webSocketServer.on("connection", (socket, request) => {
         }
 
         const audio = toBuffer(data);
+        if (audio.length > 0) {
+          audioReceived = true;
+        }
 
         if (session) {
           if (!session.sendAudio(audio)) {
@@ -433,6 +410,9 @@ webSocketServer.on("connection", (socket, request) => {
         sessionFailed = false;
         void startSession(message.mimeType);
       } else {
+        if (!sessionFailed && !audioReceived) {
+          sendSttError("No audio was received. Check microphone access and try recording again.");
+        }
         sessionFailed = false;
         void stopSession();
       }
@@ -448,9 +428,11 @@ webSocketServer.on("connection", (socket, request) => {
 
   socket.on("close", (code, reason) => {
     isConnected = false;
-    for (const controller of answerControllers.values()) {
-      controller.abort();
-    }
+    cancelActiveAnswers(
+      answerControllers,
+      (event) => send(event),
+      "Answer generation was cancelled because the connection closed.",
+    );
     answerControllers.clear();
     sessionMemory.clear();
     answeredQuestionIds.clear();

@@ -148,9 +148,14 @@ export function AnswerPanel({ answers, onCancel }: AnswerPanelProps) {
               {answer.status === "complete" && (
                 <p className="mt-3 text-xs text-slate-500">
                   {answer.timeToFirstTokenMs === null
-                    ? "First-token timing unavailable"
-                    : `First token: ${answer.timeToFirstTokenMs} ms`}
-                  {answer.totalMs === null ? "" : ` · Total: ${answer.totalMs} ms`}
+                    ? "First-token latency unavailable"
+                    : `First token after question: ${Math.round(answer.timeToFirstTokenMs)} ms`}
+                  {answer.llmRequestLatencyMs === null
+                    ? " · Request latency unavailable"
+                    : ` · LLM request: ${Math.round(answer.llmRequestLatencyMs)} ms`}
+                  {answer.totalMs === null
+                    ? " · Total response time unavailable"
+                    : ` · Total response: ${Math.round(answer.totalMs)} ms`}
                 </p>
               )}
             </article>

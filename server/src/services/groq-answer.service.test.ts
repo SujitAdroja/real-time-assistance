@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import Groq from "groq-sdk";
 import {
+  AnswerGenerationError,
   createGroqAnswerService,
   toAnswerGenerationError,
 } from "./groq-answer.service.js";
@@ -98,4 +99,44 @@ test("maps Groq rate limits to a user-facing error", () => {
     new Groq.RateLimitError(429, { error: "limited" }, "rate limited", new Headers()),
   );
   assert.equal(error.code, "rate_limit");
+});
+
+test("maps authentication, timeout, and interrupted connection failures to safe messages", () => {
+  const authentication = toAnswerGenerationError(
+    new Groq.AuthenticationError(401, { error: "secret provider detail" }, "unauthorized", new Headers()),
+  );
+  const timeout = toAnswerGenerationError(new Groq.APIConnectionTimeoutError());
+  const interrupted = toAnswerGenerationError(
+    new Groq.APIConnectionError({ message: "connection interrupted with credential detail" }),
+  );
+
+  assert.equal(authentication.code, "authentication");
+  assert.doesNotMatch(authentication.message, /secret provider detail|unauthorized/);
+  assert.equal(timeout.code, "timeout");
+  assert.equal(interrupted.code, "provider");
+  assert.doesNotMatch(interrupted.message, /credential detail|interrupted/);
+});
+
+test("handles an invalid Groq API key without exposing provider response details", async () => {
+  const service = createGroqAnswerService(
+    "test-key",
+    MODEL,
+    async () => Response.json(
+      { error: "secret provider detail" },
+      { status: 401 },
+    ),
+  );
+
+  await assert.rejects(
+    service.streamAnswer({
+      question: "What is RAG?",
+      context: { resume: "", jobDescription: "", recentConversation: [] },
+      signal: new AbortController().signal,
+      onToken: () => {},
+    }),
+    (error: unknown) =>
+      error instanceof AnswerGenerationError &&
+      error.code === "authentication" &&
+      !error.message.includes("secret provider detail"),
+  );
 });

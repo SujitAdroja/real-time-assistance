@@ -36,6 +36,11 @@ export type GeneratedAnswer = {
   error: string | null;
   timeToFirstTokenMs: number | null;
   totalMs: number | null;
+  llmRequestLatencyMs: number | null;
+  questionCompletedAt: number | null;
+  llmRequestStartedAt: number | null;
+  firstTokenAt: number | null;
+  answerCompletedAt: number | null;
 };
 
 export type TranscriptSegment = {
@@ -100,7 +105,17 @@ type ServerMessage =
   | { type: "context:error"; code: string; message: string }
   | { type: "answer:start"; questionId: string; question: string; model: string; startedAt: number }
   | { type: "answer:token"; questionId: string; token: string }
-  | { type: "answer:complete"; questionId: string; totalMs: number; timeToFirstTokenMs: number | null }
+  | {
+      type: "answer:complete";
+      questionId: string;
+      totalMs: number;
+      timeToFirstTokenMs: number | null;
+      llmRequestLatencyMs?: number | null;
+      questionCompletedAt?: number | null;
+      llmRequestStartedAt?: number | null;
+      firstTokenAt?: number | null;
+      answerCompletedAt?: number | null;
+    }
   | { type: "answer:error"; questionId: string; code: string; message: string };
 
 type SttStatus = "disconnected" | "connecting" | "ready" | "closed" | "error";
@@ -241,7 +256,22 @@ function isServerMessage(message: unknown): message is ServerMessage {
     "totalMs" in message &&
     typeof message.totalMs === "number" &&
     "timeToFirstTokenMs" in message &&
-    (typeof message.timeToFirstTokenMs === "number" || message.timeToFirstTokenMs === null)
+    (typeof message.timeToFirstTokenMs === "number" || message.timeToFirstTokenMs === null) &&
+    (!("llmRequestLatencyMs" in message) ||
+      typeof message.llmRequestLatencyMs === "number" ||
+      message.llmRequestLatencyMs === null) &&
+    (!("questionCompletedAt" in message) ||
+      typeof message.questionCompletedAt === "number" ||
+      message.questionCompletedAt === null) &&
+    (!("llmRequestStartedAt" in message) ||
+      typeof message.llmRequestStartedAt === "number" ||
+      message.llmRequestStartedAt === null) &&
+    (!("firstTokenAt" in message) ||
+      typeof message.firstTokenAt === "number" ||
+      message.firstTokenAt === null) &&
+    (!("answerCompletedAt" in message) ||
+      typeof message.answerCompletedAt === "number" ||
+      message.answerCompletedAt === null)
   ) {
     return true;
   }
@@ -467,6 +497,11 @@ export function useInterviewWebSocket(url: string) {
                 error: null,
                 timeToFirstTokenMs: null,
                 totalMs: null,
+                llmRequestLatencyMs: null,
+                questionCompletedAt: null,
+                llmRequestStartedAt: null,
+                firstTokenAt: null,
+                answerCompletedAt: null,
               },
               ...previous.filter((answer) => answer.questionId !== message.questionId),
             ]);
@@ -489,6 +524,11 @@ export function useInterviewWebSocket(url: string) {
                       status: "complete",
                       timeToFirstTokenMs: message.timeToFirstTokenMs,
                       totalMs: message.totalMs,
+                      llmRequestLatencyMs: message.llmRequestLatencyMs ?? null,
+                      questionCompletedAt: message.questionCompletedAt ?? null,
+                      llmRequestStartedAt: message.llmRequestStartedAt ?? null,
+                      firstTokenAt: message.firstTokenAt ?? null,
+                      answerCompletedAt: message.answerCompletedAt ?? null,
                     }
                   : answer,
               ),
@@ -516,6 +556,19 @@ export function useInterviewWebSocket(url: string) {
         }
 
         socketRef.current = null;
+        setSttStatus("disconnected");
+        setInterimTranscript("");
+        setAnswers((previous) =>
+          previous.map((answer) =>
+            answer.status === "generating"
+              ? {
+                  ...answer,
+                  status: "error",
+                  error: "Connection lost while this answer was generating. Reconnect and try again.",
+                }
+              : answer,
+          ),
+        );
 
         if (event.code === 1000) {
           setConnectionStatus("disconnected");

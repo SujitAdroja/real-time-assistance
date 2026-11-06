@@ -31,6 +31,7 @@ export interface GroqAnswerService {
     context: CandidateContext;
     followUp?: FollowUpResolution | null;
     signal: AbortSignal;
+    onRequestStart?: () => void;
     onToken: (token: string) => void;
   }): Promise<void>;
 }
@@ -67,7 +68,14 @@ export function createGroqAnswerService(
   };
 
   return {
-    async streamAnswer({ question, context, followUp, signal, onToken }) {
+    async streamAnswer({
+      question,
+      context,
+      followUp,
+      signal,
+      onRequestStart,
+      onToken,
+    }) {
       if (signal.aborted) {
         throw new AnswerGenerationError("cancelled", "Answer generation was cancelled.");
       }
@@ -75,6 +83,7 @@ export function createGroqAnswerService(
       await checkModelAvailable(signal);
 
       try {
+        onRequestStart?.();
         const stream = await client.chat.completions.create(
           {
             model,
@@ -151,7 +160,10 @@ export function toAnswerGenerationError(error: unknown): AnswerGenerationError {
   }
 
   if (error instanceof Error) {
-    return new AnswerGenerationError("provider", error.message);
+    return new AnswerGenerationError(
+      "provider",
+      "Groq answer generation failed. Please try the question again.",
+    );
   }
 
   return new AnswerGenerationError(

@@ -177,7 +177,7 @@ Test the error and context scenarios by temporarily using an invalid Groq key (r
 - `groq-answer.service.ts` uses the official `groq-sdk`, validates the model against the account's model list, requests `stream: true`, and forwards each text delta immediately. Groq's `GROQ_API_KEY` never leaves the backend.
 - `answer:start` identifies the question before generation; each token and terminal event includes the same `questionId`. The client stores answer state by that ID, so concurrent streams cannot mix.
 - Recent conversation is bounded per WebSocket session. Only history identified as relevant to a follow-up is sent to Groq; resume and job description are bounded and held in memory only.
-- The server reports time to first token and total generation duration. The first-token measurement includes any uncached model-list validation.
+- The server reports question-to-first-token latency, request-to-first-token latency, and question-to-completion time. A cold model availability check occurs before the timed completion request and is included in question-to-first-token latency.
 
 The rules and prompt reduce fabrication but do not guarantee factual answers; model output still needs review. This POC uses simple in-memory session state, has no durable resume storage, and allows at most two concurrent answers per client connection. A later iteration could add stronger context validation, richer persistence controls, model evaluations, and user feedback. This module does not add answer history storage, database infrastructure, or RAG.
 
@@ -191,7 +191,7 @@ The rules and prompt reduce fabrication but do not guarantee factual answers; mo
 6. **How are tokens correlated with an answer?** Every start, token, completion, and error event carries the detected question's ID.
 7. **How are concurrent answers handled?** The backend keeps separate controllers per question ID and caps active requests; the frontend updates each answer by ID.
 8. **How are rate limits and invalid credentials handled?** SDK errors are mapped into safe `answer:error` messages; automatic retries are disabled to avoid hidden delays.
-9. **How is time to first token measured?** The backend records a timestamp when the first non-empty streamed content arrives and compares it with request start.
+9. **How is time to first token measured?** The backend records question completion, Groq completion-request start, and the first non-empty streamed token. It uses a monotonic clock for durations and reports both question-to-token and request-to-token latency.
 10. **What are the main trade-offs?** In-memory context is simple but temporary, rule-based question detection can be wrong, and prompt instructions cannot guarantee a model never hallucinates.
 
 Build either app with `npm run build:web` or `npm run build:server` from the project root.
@@ -229,7 +229,7 @@ The existing Candidate Context section accepts resume and job-description text, 
 
 Each WebSocket connection owns an isolated `InterviewSessionMemory`. It stores up to eight completed, non-empty Q&A turns with question ID, original question, answer, completion timestamp, and detected category. Duplicate question IDs are ignored, failed or empty answer generations are not stored, and the memory is cleared when that WebSocket connection ends. Stopping microphone capture closes the Deepgram stream but leaves the WebSocket interview session alive, so a pause and restart can retain its context and completed turns. Reconnecting creates a fresh session; the browser clears old context rather than reapplying stale data.
 
-The follow-up resolver recognizes short/contextual forms such as “Why?”, “What are its disadvantages?”, “How did you implement that?”, and “Can you explain further?” only when completed history is available. It supplies up to the two most recent completed exchanges and a tentative interpretation. Standalone questions receive no previous exchanges. The prompt asks Groq to clarify unresolved references instead of guessing.
+The follow-up resolver recognizes short/contextual forms such as “Why?”, “What are its disadvantages?”, “How did you implement that?”, and “Can you explain further?” It returns a structured `RESOLVED`, `AMBIGUOUS`, or `STANDALONE` result with referenced turn IDs. Standalone questions receive no previous exchanges; ambiguous references instruct Groq to ask a short clarification question. Generated answers are labeled AI-generated and unverified, and cannot be used as evidence of candidate experience.
 
 Context limits are applied at two stages: each stored resume/JD field is limited to 15,000 characters, while prompt reference budgets cap resume at 8,000 characters, job description at 6,000, each history field at 1,000, and relevant history at two exchanges. The complete system-plus-user prompt is capped at 24,000 characters. Truncated reference text includes an explicit notice. The current question is never silently truncated; empty questions and questions over 2,000 characters receive an answer error instead.
 
@@ -244,3 +244,69 @@ npm run build:web
 ```
 
 For manual verification, save resume/JD text before or during a live session and confirm the save status. Ask a question supported by the resume, then a short follow-up such as “What are its disadvantages?” and verify the prior exchange informs that answer. Ask an unrelated standalone question and confirm old exchange text is not added as relevant history. Clear context and verify the empty status; disconnect/reload and confirm context does not carry into the new WebSocket session.
+
+## Module 8: latency, reliability, and testing
+
+### Architecture and data flow
+
+The browser captures microphone audio with `MediaRecorder` and sends binary chunks over the shared WebSocket. The backend forwards them to Deepgram, sends finalized transcript events through the existing question detector, and starts a per-question answer pipeline when `question:detected` fires. The pipeline snapshots that WebSocket's candidate context and completed conversation, resolves follow-ups, builds the bounded prompt through `GroqAnswerService`, forwards tokens under the same `questionId`, then stores only non-empty answers after successful completion. The dashboard updates each answer by ID and shows its generation status and metrics. WebSocket disconnect clears session memory; stopping recording cancels active answer generations but retains the WebSocket-scoped context for a later recording.
+
+### Latency metrics
+
+The existing `answer:complete` event retains `totalMs` and `timeToFirstTokenMs` for compatibility and adds timestamp fields and `llmRequestLatencyMs`. Metrics are associated with the event's `questionId`:
+
+- **First-token latency:** first token minus completed-question time.
+- **LLM request latency:** first token minus the start of the Groq completion request. Initial model availability validation occurs before this request start.
+- **Total response time:** answer completion minus completed-question time.
+
+Timestamp fields use a monotonic, epoch-aligned clock; duration differences use `performance.now()` so wall-clock adjustments do not distort elapsed times. If a metric is missing, the UI displays it as unavailable instead of inventing a value. A sub-three-second first token is a goal, not a guarantee; provider, network, and cold model-validation time affect it.
+
+### Error handling and resource cleanup
+
+Deepgram connection failures are mapped to understandable STT errors without exposing provider response details. Groq authentication, rate-limit, timeout, model, and connection failures use safe answer errors. An empty stream is a failed answer, partial output from a failed/interrupted stream is not saved to memory, and stopping recording or closing the WebSocket aborts active answer controllers. A stop with no audio received reports an actionable STT error. Browser microphone permission and device failures are shown in the recording controls. Answer start, token, completion, and error messages remain question-ID scoped; late tokens cannot update a completed or different answer.
+
+The UI does not reconnect automatically. Starting another recording attempts to reconnect; a new WebSocket connection starts a fresh in-memory session. There is no live API call in the automated test suite.
+
+### Prerequisites and environment
+
+- Node.js 20.9 or later and npm.
+- A Deepgram API key and a Groq API key for live transcription and answer generation.
+- A browser with `MediaRecorder` and microphone access (localhost or HTTPS).
+
+Install dependencies from the repository root:
+
+```bash
+npm --prefix web install
+npm --prefix server install
+```
+
+Copy `server/.env.example` to `server/.env`, then set `DEEPGRAM_API_KEY` and `GROQ_API_KEY`. `PORT` defaults to `4000`; `GROQ_MODEL` defaults to `openai/gpt-oss-20b`. Optionally copy `web/.env.example` to `web/.env.local` and set `NEXT_PUBLIC_WS_URL` (default `ws://localhost:4000/ws`). API keys must remain in the backend environment and must not be added to browser variables or committed files.
+
+Start the applications in separate terminals:
+
+```bash
+npm run dev:server
+npm run dev:web
+```
+
+Open <http://localhost:3000>, allow microphone access, optionally save candidate context, start recording, and ask a complete interview question. Confirm the transcript and detected question appear, answer tokens stream, and completed-answer timing appears. Stop recording during an answer to verify cancellation; stop without sending microphone data to verify the no-audio error. To test reconnect behavior, reload the page or start a new recording after the socket disconnects; context does not carry over to a new WebSocket session.
+
+### Automated testing
+
+The backend suite includes mocked Groq streaming and answer-pipeline integration coverage for successful, failed, empty, interrupted, follow-up, standalone, ambiguous, duplicate, concurrent-session, cancellation, cleanup, and long-context cases. No automated test calls Deepgram or Groq live. The web package has no configured test script.
+
+Run all configured checks from the repository root:
+
+```bash
+npm --prefix server test
+npm --prefix server run build
+npm --prefix web run lint
+./web/node_modules/.bin/tsc --noEmit --project web/tsconfig.json
+npm run build:web
+```
+
+### Known limitations and privacy
+
+Resume, job description, and prompt budgets are character-based rather than provider-token-based. The current bounded limits (15,000 characters per saved field, 8,000 resume characters, 6,000 job-description characters, eight stored turns, two prompt-history turns, 2,000 question characters, and 24,000 total prompt characters) were retained; adding a tokenizer dependency is not justified for this small POC. The current question is rejected if it exceeds its limit and is never silently truncated. Character counts can differ from provider token counts, so the provider can still reject an unusually token-dense prompt.
+
+Context and conversation memory live only in backend process memory, scoped to a WebSocket, and are not written to disk. API keys stay server-side; logs do not include full resume/JD contents or API keys. Automated tests cover the answer pipeline and memory but not real browser permission dialogs, live Deepgram behavior, or live Groq availability. Reconnection is user-triggered rather than automatic, and first-token performance depends on network/provider conditions.
