@@ -9,6 +9,7 @@ import {
   type DeepgramSession,
   type DeepgramSessionEvent,
 } from "./services/deepgram.service.js";
+import { QuestionDetectionSession } from "./services/question-detection-session.js";
 
 dotenv.config({ path: resolve(__dirname, "../.env") });
 
@@ -33,6 +34,7 @@ webSocketServer.on("connection", (socket, request) => {
   let pendingAudio: Buffer[] = [];
   let pendingAudioBytes = 0;
   let finalTranscriptId = 0;
+  let questionDetectionSession: QuestionDetectionSession | null = null;
 
   console.log(`WebSocket client connected: ${clientAddress}`);
 
@@ -102,6 +104,16 @@ webSocketServer.on("connection", (socket, request) => {
         text: event.text,
         speechFinal: event.speechFinal,
       });
+      questionDetectionSession?.addFinalSegment({
+        id: event.id,
+        text: event.text,
+        speechFinal: event.speechFinal,
+      });
+      return;
+    }
+
+    if (event.type === "utterance-end") {
+      questionDetectionSession?.signalUtteranceEnd();
       return;
     }
 
@@ -113,6 +125,7 @@ webSocketServer.on("connection", (socket, request) => {
       return;
     }
 
+    questionDetectionSession?.flush();
     send({ type: "stt:closed" });
     if (session === sessionRef.current) {
       session = null;
@@ -136,6 +149,10 @@ webSocketServer.on("connection", (socket, request) => {
     const sessionRef: { current: DeepgramSession | null } = { current: null };
     startupController = controller;
     finalTranscriptId = 0;
+    questionDetectionSession = new QuestionDetectionSession(
+      String(generation),
+      (event) => send(event),
+    );
 
     console.log(`Starting Deepgram session for audio MIME type: ${mimeType}`);
     send({ type: "stt:connecting" });

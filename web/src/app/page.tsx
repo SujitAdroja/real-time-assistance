@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DetectedQuestionPanel } from "@/components/DetectedQuestionPanel";
 import { useInterviewWebSocket } from "@/hooks/useInterviewWebSocket";
 
 const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:4000/ws";
@@ -37,9 +38,11 @@ export default function Home() {
     connect,
     connectionError,
     connectionStatus,
+    detectedQuestion,
     disconnect,
     finalTranscripts,
     interimTranscript,
+    questionDetectionStatus,
     sendAudioChunk,
     sendControlMessage,
     sttError,
@@ -161,10 +164,10 @@ export default function Home() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col justify-center px-6 py-16">
       <p className="text-sm font-semibold uppercase tracking-[0.2em] text-indigo-700">
-        Proof of concept · Milestone 3
+        Proof of concept · Milestone 4
       </p>
       <h1 className="mt-4 text-4xl font-bold tracking-tight text-slate-950 sm:text-5xl">
-        Real-Time Speech-to-Text
+        Real-Time Interview Assistant
       </h1>
       <p className="mt-5 max-w-2xl text-lg leading-8 text-slate-600">
         Stream microphone audio through the backend to Deepgram and view the live transcript.
@@ -252,6 +255,10 @@ export default function Home() {
           {interimTranscript || "Listening for speech…"}
         </p>
       </section>
+      <DetectedQuestionPanel
+        question={detectedQuestion}
+        status={questionDetectionStatus}
+      />
     </main>
   );
 }

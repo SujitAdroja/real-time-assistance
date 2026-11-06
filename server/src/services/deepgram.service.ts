@@ -2,7 +2,13 @@ import { DeepgramClient } from "@deepgram/sdk";
 
 export type DeepgramSessionEvent =
   | { type: "interim"; text: string }
-  | { type: "final"; text: string; speechFinal: boolean }
+  | {
+      type: "final";
+      id: string;
+      text: string;
+      speechFinal: boolean;
+    }
+  | { type: "utterance-end" }
   | { type: "error"; error: Error }
   | { type: "closed" };
 
@@ -53,23 +59,34 @@ export async function createDeepgramSession(
     }
 
     if (message.type !== "Results") {
+      if (message.type === "UtteranceEnd") {
+        onEvent({ type: "utterance-end" });
+      }
       return;
     }
 
     const text = message.channel.alternatives[0]?.transcript.trim();
 
     if (!text) {
+      if (message.speech_final) {
+        onEvent({ type: "utterance-end" });
+      }
       return;
     }
 
     if (message.is_final) {
       onEvent({
         type: "final",
+        id: `${message.start}:${message.duration}:${text.toLowerCase()}`,
         text,
         speechFinal: message.speech_final === true,
       });
     } else {
       onEvent({ type: "interim", text });
+    }
+
+    if (message.speech_final) {
+      onEvent({ type: "utterance-end" });
     }
   });
 

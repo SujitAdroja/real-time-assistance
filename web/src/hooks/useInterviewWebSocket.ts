@@ -21,15 +21,72 @@ export type TranscriptSegment = {
   speechFinal: boolean;
 };
 
+export type QuestionCategory =
+  | "technical"
+  | "experience"
+  | "behavioral"
+  | "scenario"
+  | "general";
+type QuestionClassification =
+  | "INTERVIEW_QUESTION"
+  | "SMALL_TALK"
+  | "STATEMENT"
+  | "INCOMPLETE"
+  | "AMBIGUOUS";
+
+export type DetectedQuestion = {
+  id: string;
+  text: string;
+  category: QuestionCategory;
+  detectedAt: number;
+};
+
+export type QuestionDetectionStatus = {
+  classification: QuestionClassification;
+  reason: string;
+  shouldTriggerAnswer: boolean;
+};
+
 type ServerMessage =
   | { type: "stt:connecting" }
   | { type: "stt:ready" }
   | { type: "stt:closed" }
   | { type: "stt:error"; message: string }
   | { type: "transcript:interim"; text: string }
-  | { type: "transcript:final"; id: string; text: string; speechFinal: boolean };
+  | { type: "transcript:final"; id: string; text: string; speechFinal: boolean }
+  | {
+      type: "question:detected";
+      id: string;
+      text: string;
+      category: QuestionCategory;
+      detectedAt: number;
+    }
+  | {
+      type: "question:status";
+      classification: QuestionClassification;
+      reason: string;
+      shouldTriggerAnswer: boolean;
+    };
 
 type SttStatus = "disconnected" | "connecting" | "ready" | "closed" | "error";
+const QUESTION_CATEGORIES: readonly QuestionCategory[] = [
+  "technical",
+  "experience",
+  "behavioral",
+  "scenario",
+  "general",
+];
+const QUESTION_CLASSIFICATIONS: readonly QuestionClassification[] = [
+  "INTERVIEW_QUESTION",
+  "SMALL_TALK",
+  "STATEMENT",
+  "INCOMPLETE",
+  "AMBIGUOUS",
+];
+
+function isOneOf<T extends string>(value: unknown, values: readonly T[]): value is T {
+  return typeof value === "string" && values.some((candidate) => candidate === value);
+}
 
 function isServerMessage(message: unknown): message is ServerMessage {
   if (typeof message !== "object" || message === null || !("type" in message)) {
@@ -56,7 +113,7 @@ function isServerMessage(message: unknown): message is ServerMessage {
     return true;
   }
 
-  return (
+  if (
     message.type === "transcript:final" &&
     "id" in message &&
     typeof message.id === "string" &&
@@ -64,6 +121,32 @@ function isServerMessage(message: unknown): message is ServerMessage {
     typeof message.text === "string" &&
     "speechFinal" in message &&
     typeof message.speechFinal === "boolean"
+  ) {
+    return true;
+  }
+
+  if (
+    message.type === "question:detected" &&
+    "id" in message &&
+    typeof message.id === "string" &&
+    "text" in message &&
+    typeof message.text === "string" &&
+    "category" in message &&
+    isOneOf(message.category, QUESTION_CATEGORIES) &&
+    "detectedAt" in message &&
+    typeof message.detectedAt === "number"
+  ) {
+    return true;
+  }
+
+  return (
+    message.type === "question:status" &&
+    "classification" in message &&
+    isOneOf(message.classification, QUESTION_CLASSIFICATIONS) &&
+    "reason" in message &&
+    typeof message.reason === "string" &&
+    "shouldTriggerAnswer" in message &&
+    typeof message.shouldTriggerAnswer === "boolean"
   );
 }
 
@@ -76,6 +159,10 @@ export function useInterviewWebSocket(url: string) {
   const [sttError, setSttError] = useState<string | null>(null);
   const [interimTranscript, setInterimTranscript] = useState("");
   const [finalTranscripts, setFinalTranscripts] = useState<TranscriptSegment[]>([]);
+  const [detectedQuestion, setDetectedQuestion] = useState<DetectedQuestion | null>(null);
+  const [questionDetectionStatus, setQuestionDetectionStatus] =
+    useState<QuestionDetectionStatus | null>(null);
+  const seenQuestionIdsRef = useRef(new Set<string>());
 
   const disconnect = useCallback(() => {
     const socket = socketRef.current;
@@ -176,6 +263,24 @@ export function useInterviewWebSocket(url: string) {
                   ],
             );
             break;
+          case "question:detected":
+            if (!seenQuestionIdsRef.current.has(message.id)) {
+              seenQuestionIdsRef.current.add(message.id);
+              setDetectedQuestion({
+                id: message.id,
+                text: message.text,
+                category: message.category,
+                detectedAt: message.detectedAt,
+              });
+            }
+            break;
+          case "question:status":
+            setQuestionDetectionStatus({
+              classification: message.classification,
+              reason: message.reason,
+              shouldTriggerAnswer: message.shouldTriggerAnswer,
+            });
+            break;
         }
       };
 
@@ -210,6 +315,9 @@ export function useInterviewWebSocket(url: string) {
       setSttError(null);
       setInterimTranscript("");
       setFinalTranscripts([]);
+      setDetectedQuestion(null);
+      setQuestionDetectionStatus(null);
+      seenQuestionIdsRef.current.clear();
     }
 
     socket.send(JSON.stringify(message));
@@ -233,9 +341,11 @@ export function useInterviewWebSocket(url: string) {
     connect,
     connectionError,
     connectionStatus,
+    detectedQuestion,
     disconnect,
     finalTranscripts,
     interimTranscript,
+    questionDetectionStatus,
     sendAudioChunk,
     sendControlMessage,
     sttError,
