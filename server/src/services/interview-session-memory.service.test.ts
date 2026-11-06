@@ -94,6 +94,7 @@ test("stores bounded completed turns with metadata and rejects duplicates or inc
     questionId: "q-1",
     question: "What is RAG?",
     answer: "Retrieval-augmented generation.",
+    answerSource: "AI_GENERATED_UNVERIFIED",
     timestamp: 123,
     topic: "technical",
   });
@@ -191,6 +192,7 @@ test("records an answer only after successful, non-empty generation", async () =
       questionId: "q-complete",
       question: "What is RAG?",
       answer: "Completed answer",
+      answerSource: "AI_GENERATED_UNVERIFIED",
       timestamp: 12,
       topic: "technical",
     },

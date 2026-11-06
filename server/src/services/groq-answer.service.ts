@@ -4,7 +4,7 @@ import {
   PromptBuildError,
   type CandidateContext,
 } from "./prompt-builder.service.js";
-import type { FollowUpInterpretation } from "./follow-up-resolver.service.js";
+import type { FollowUpResolution } from "./follow-up-resolver.service.js";
 
 export type AnswerErrorCode =
   | "configuration"
@@ -29,7 +29,7 @@ export interface GroqAnswerService {
   streamAnswer(input: {
     question: string;
     context: CandidateContext;
-    followUp?: FollowUpInterpretation | null;
+    followUp?: FollowUpResolution | null;
     signal: AbortSignal;
     onToken: (token: string) => void;
   }): Promise<void>;

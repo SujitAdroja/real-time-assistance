@@ -1,54 +1,128 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveFollowUpQuestion } from "./follow-up-resolver.service.js";
+import type { ConversationTurn } from "./prompt-builder.service.js";
 
-const history = [
+const ragHistory: ConversationTurn[] = [
   {
-    questionId: "q-1",
+    questionId: "q-rag",
     question: "What is RAG?",
     answer: "RAG retrieves relevant documents and supplies them to a model.",
+    answerSource: "AI_GENERATED_UNVERIFIED",
     timestamp: 1,
-    topic: "technical",
   },
 ];
 
-test("resolves pronoun follow-ups against the latest completed topic", () => {
-  const result = resolveFollowUpQuestion("What are its disadvantages?", history);
-  assert.ok(result);
-  assert.match(result.resolvedQuestion, /disadvantages of RAG/i);
-  assert.equal(result.relevantConversation[0]?.question, "What is RAG?");
-});
+test("resolves supported follow-up patterns to one clear recent topic", () => {
+  const pronoun = resolveFollowUpQuestion("What are its disadvantages?", ragHistory);
+  assert.equal(pronoun.status, "RESOLVED");
+  assert.equal(pronoun.referencedTopic, "RAG");
+  assert.deepEqual(pronoun.relevantTurnIds, ["q-rag"]);
+  assert.match(pronoun.resolvedQuestion ?? "", /discuss the requested aspect of RAG/i);
 
-test("resolves short why and implementation follow-ups", () => {
-  const why = resolveFollowUpQuestion("Why?", history);
-  assert.ok(why);
-  assert.match(why.resolvedQuestion, /RAG matters/i);
-
-  const implementation = resolveFollowUpQuestion("How did you implement that?", history);
-  assert.ok(implementation);
-  assert.match(implementation.resolvedQuestion, /implement/i);
-
-  const elaborate = resolveFollowUpQuestion("Can you explain further?", history);
-  assert.ok(elaborate);
-  assert.match(elaborate.resolvedQuestion, /RAG in more detail/i);
-});
-
-test("does not inject conversation for standalone questions or when history is empty", () => {
-  assert.equal(resolveFollowUpQuestion("What is PostgreSQL?", history), null);
-  assert.equal(resolveFollowUpQuestion("Why?", []), null);
-  assert.equal(resolveFollowUpQuestion("What are the disadvantages?", history), null);
-});
-
-test("uses only the most recent relevant exchanges and preserves the original question", () => {
-  const result = resolveFollowUpQuestion("  What about its disadvantages?  ", [
-    { questionId: "q-1", question: "Old topic", answer: "Old answer", timestamp: 1 },
-    ...history,
-    { questionId: "q-2", question: "How is RAG evaluated?", answer: "With retrieval metrics.", timestamp: 2 },
-  ]);
-  assert.ok(result);
-  assert.equal(result.originalQuestion, "What about its disadvantages?");
-  assert.deepEqual(
-    result.relevantConversation.map((turn) => turn.questionId),
-    ["q-1", "q-2"],
+  const implementation = resolveFollowUpQuestion(
+    "How did you implement that?",
+    ragHistory,
   );
+  assert.equal(implementation.status, "RESOLVED");
+  assert.equal(implementation.referencedTopic, "RAG");
+  assert.deepEqual(implementation.relevantTurnIds, ["q-rag"]);
+  assert.match(implementation.resolvedQuestion ?? "", /RAG/i);
+
+  const elaborate = resolveFollowUpQuestion("Can you explain further?", ragHistory);
+  assert.equal(elaborate.status, "RESOLVED");
+  assert.equal(elaborate.referencedTopic, "RAG");
+});
+
+test("marks a reference ambiguous when recent technologies compete", () => {
+  const history: ConversationTurn[] = [
+    {
+      questionId: "q-react",
+      question: "What is React?",
+      answer: "A UI library.",
+      answerSource: "AI_GENERATED_UNVERIFIED",
+      timestamp: 1,
+    },
+    {
+      questionId: "q-kubernetes",
+      question: "Explain Kubernetes.",
+      answer: "A container orchestration platform.",
+      answerSource: "AI_GENERATED_UNVERIFIED",
+      timestamp: 2,
+    },
+  ];
+
+  const result = resolveFollowUpQuestion("What are its advantages?", history);
+  assert.equal(result.status, "AMBIGUOUS");
+  assert.equal(result.referencedTopic, null);
+  assert.equal(result.resolvedQuestion, null);
+  assert.deepEqual(result.relevantTurnIds, ["q-react", "q-kubernetes"]);
+});
+
+test("marks a short follow-up ambiguous when its antecedent is unclear or missing", () => {
+  assert.equal(resolveFollowUpQuestion("Why?", []).status, "AMBIGUOUS");
+
+  const unclearHistory: ConversationTurn[] = [
+    {
+      questionId: "q-general",
+      question: "Tell me about yourself.",
+      answer: "I am an engineer.",
+      answerSource: "AI_GENERATED_UNVERIFIED",
+      timestamp: 1,
+    },
+  ];
+  assert.equal(resolveFollowUpQuestion("Why?", unclearHistory).status, "AMBIGUOUS");
+});
+
+test("resolves an explicitly named topic from history without choosing a competing topic", () => {
+  const history: ConversationTurn[] = [
+    ...ragHistory,
+    {
+      questionId: "q-react",
+      question: "What is React?",
+      answer: "A UI library.",
+      answerSource: "AI_GENERATED_UNVERIFIED",
+      timestamp: 2,
+    },
+  ];
+
+  const result = resolveFollowUpQuestion("Why did you choose React?", history);
+  assert.equal(result.status, "RESOLVED");
+  assert.equal(result.referencedTopic, "React");
+  assert.deepEqual(result.relevantTurnIds, ["q-react"]);
+});
+
+test("keeps an independent technical question standalone with no irrelevant history", () => {
+  const result = resolveFollowUpQuestion("Explain JWT.", ragHistory);
+  assert.equal(result.status, "STANDALONE");
+  assert.equal(result.referencedTopic, null);
+  assert.deepEqual(result.relevantTurnIds, []);
+  assert.deepEqual(result.relevantConversation, []);
+});
+
+test("does not inject older turns when resolving within the bounded recent history", () => {
+  const result = resolveFollowUpQuestion(
+    "What about its disadvantages?",
+    [
+      {
+        questionId: "q-old",
+        question: "Explain PostgreSQL.",
+        answer: "A relational database.",
+        answerSource: "AI_GENERATED_UNVERIFIED",
+        timestamp: 1,
+      },
+      ...ragHistory,
+      {
+        questionId: "q-rag-metrics",
+        question: "How is RAG evaluated?",
+        answer: "With retrieval metrics.",
+        answerSource: "AI_GENERATED_UNVERIFIED",
+        timestamp: 2,
+      },
+    ],
+  );
+
+  assert.equal(result.status, "RESOLVED");
+  assert.deepEqual(result.relevantTurnIds, ["q-rag", "q-rag-metrics"]);
+  assert.equal(result.originalQuestion, "What about its disadvantages?");
 });

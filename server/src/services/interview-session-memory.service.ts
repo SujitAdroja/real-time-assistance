@@ -26,11 +26,8 @@ export class CandidateContextValidationError extends Error {
   }
 }
 
-export type CompletedConversationTurn = ConversationTurn & {
-  questionId: string;
-  timestamp: number;
-  topic?: string;
-};
+export type CompletedConversationTurn = ConversationTurn;
+export type CompletedConversationTurnInput = Omit<ConversationTurn, "answerSource">;
 
 export class InterviewSessionMemory {
   private resume = "";
@@ -77,7 +74,7 @@ export class InterviewSessionMemory {
     };
   }
 
-  recordCompletedTurn(turn: CompletedConversationTurn): boolean {
+  recordCompletedTurn(turn: CompletedConversationTurnInput): boolean {
     if (
       !turn.questionId.trim() ||
       !turn.question.trim() ||
@@ -95,7 +92,10 @@ export class InterviewSessionMemory {
       }
     }
 
-    this.turns.push({ ...turn });
+    this.turns.push({
+      ...turn,
+      answerSource: "AI_GENERATED_UNVERIFIED",
+    });
     if (this.turns.length > MAX_SESSION_HISTORY_TURNS) {
       this.turns.splice(0, this.turns.length - MAX_SESSION_HISTORY_TURNS);
     }
