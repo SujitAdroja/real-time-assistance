@@ -1,7 +1,4 @@
-import type {
-  CandidateContext,
-  ConversationTurn,
-} from "./prompt-builder.service.js";
+import type { CandidateContext, ConversationTurn } from "./conversation.types.js";
 
 export const MAX_CANDIDATE_CONTEXT_CHARS = 15_000;
 export const MAX_SESSION_HISTORY_TURNS = 8;

@@ -1,4 +1,4 @@
-import type { GeneratedAnswer } from "@/hooks/useInterviewWebSocket";
+import type { GeneratedAnswer } from "@/types/interview";
 
 type PerformanceMetricsProps = {
   answers: GeneratedAnswer[];

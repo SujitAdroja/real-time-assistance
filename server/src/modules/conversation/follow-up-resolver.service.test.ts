@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveFollowUpQuestion } from "./follow-up-resolver.service.js";
-import type { ConversationTurn } from "./prompt-builder.service.js";
+import type { ConversationTurn } from "./conversation.types.js";
 
 const ragHistory: ConversationTurn[] = [
   {

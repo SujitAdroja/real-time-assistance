@@ -1,9 +1,6 @@
 "use client";
 
-import type {
-  DetectedQuestion,
-  QuestionDetectionStatus,
-} from "@/hooks/useInterviewWebSocket";
+import type { DetectedQuestion, QuestionDetectionStatus } from "@/types/interview";
 
 type DetectedQuestionPanelProps = {
   question: DetectedQuestion | null;

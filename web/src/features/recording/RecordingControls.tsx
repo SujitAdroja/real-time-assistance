@@ -1,8 +1,7 @@
 "use client";
 
-import { StatusIndicator } from "@/components/StatusIndicator";
-
-export type RecordingStatus = "idle" | "starting" | "recording" | "stopping";
+import { StatusIndicator } from "@/components/ui/StatusIndicator";
+import type { RecordingStatus } from "@/types/interview";
 
 type RecordingControlsProps = {
   status: RecordingStatus;

@@ -91,6 +91,9 @@ export async function createDeepgramSession(
   });
 
   connection.on("error", (error) => {
+    // Preserve startup failures too: waitForOpen() can reject with an SDK
+    // ErrorEvent, while the message callback is only used after the socket opens.
+    startupError = error;
     if (ready) {
       onEvent({ type: "error", error });
     }
@@ -126,7 +129,7 @@ export async function createDeepgramSession(
     }
   } catch (error) {
     connection.close();
-    throw error;
+    throw startupError ?? error;
   }
 
   return {

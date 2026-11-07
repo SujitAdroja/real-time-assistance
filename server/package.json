@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
-    "test": "tsx --test src/services/*.test.ts",
+    "test": "tsx --test src/modules/*/*.test.ts src/integrations/*/*.test.ts",
     "start": "node dist/index.js"
   },
   "keywords": [],

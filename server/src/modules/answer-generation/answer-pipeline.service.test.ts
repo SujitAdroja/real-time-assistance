@@ -7,13 +7,12 @@ import {
   type AnswerPipelineClock,
   type AnswerPipelineEvent,
 } from "./answer-pipeline.service.js";
-import { createGroqAnswerService } from "./groq-answer.service.js";
-import { InterviewSessionMemory } from "./interview-session-memory.service.js";
-import type { GroqAnswerService } from "./groq-answer.service.js";
+import { createGroqAnswerService, type GroqAnswerService } from "../../integrations/groq/groq-answer.service.js";
+import { InterviewSessionMemory } from "../conversation/interview-session-memory.service.js";
 import {
   QuestionDetectionSession,
   type QuestionDetectionEvent,
-} from "./question-detection-session.js";
+} from "../question-detection/question-detection-session.js";
 
 const MODEL = "openai/gpt-oss-20b";
 const TIME_ORIGIN = 1_700_000_000_000;
@@ -400,7 +399,8 @@ test("keeps answers associated correctly when several question events arrive rap
   const service: GroqAnswerService = {
     async streamAnswer(input) {
       await Promise.resolve();
-      input.onToken(`Answer for ${input.question}`);
+      const questionText = input.messages[1]?.content.match(/Interview question:\n([^\n]+)/)?.[1];
+      input.onToken(`Answer for ${questionText}`);
     },
   };
   const questions = ["What is React?", "Explain JWT.", "What is RAG?", "How does OAuth work?"];
@@ -443,7 +443,7 @@ test("keeps concurrent WebSocket session memories isolated", async () => {
   const seenContexts: string[] = [];
   const createService = (answer: string): GroqAnswerService => ({
     async streamAnswer(input) {
-      seenContexts.push(input.context.resume);
+      seenContexts.push(input.messages[1]?.content ?? "");
       input.onToken(answer);
     },
   });
@@ -469,7 +469,8 @@ test("keeps concurrent WebSocket session memories isolated", async () => {
     }),
   ]);
 
-  assert.deepEqual(seenContexts.sort(), ["Candidate one", "Candidate two"]);
+  assert.ok(seenContexts.some((context) => context.includes("Candidate one")));
+  assert.ok(seenContexts.some((context) => context.includes("Candidate two")));
   assert.equal(firstMemory.getRecentConversation()[0]?.answer, "Answer one");
   assert.equal(secondMemory.getRecentConversation()[0]?.answer, "Answer two");
 });

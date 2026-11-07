@@ -1,10 +1,7 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
-import type {
-  CandidateContextInput,
-  CandidateContextStatus,
-} from "@/hooks/useInterviewWebSocket";
+import type { CandidateContextInput, CandidateContextStatus } from "@/types/interview";
 
 type CandidateContextPanelProps = {
   context: CandidateContextInput;

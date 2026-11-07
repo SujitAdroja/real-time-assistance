@@ -1,4 +1,4 @@
-import type { ConversationTurn } from "./prompt-builder.service.js";
+import type { ConversationTurn } from "./conversation.types.js";
 
 export type FollowUpResolutionStatus = "RESOLVED" | "AMBIGUOUS" | "STANDALONE";
 

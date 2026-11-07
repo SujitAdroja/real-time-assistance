@@ -1,26 +1,13 @@
-import type { FollowUpResolution } from "./follow-up-resolver.service.js";
+import type { FollowUpResolution } from "../conversation/follow-up-resolver.service.js";
+import type { CandidateContext } from "../conversation/conversation.types.js";
+import type { ChatMessage } from "./answer-generation.types.js";
 
-export type ConversationAnswerSource = "AI_GENERATED_UNVERIFIED";
-
-export interface ConversationTurn {
-  questionId: string;
-  question: string;
-  answer: string;
-  answerSource: ConversationAnswerSource;
-  timestamp: number;
-  topic?: string;
-}
-
-export interface CandidateContext {
-  resume: string;
-  jobDescription: string;
-  recentConversation: ConversationTurn[];
-}
-
-export interface PromptMessage {
-  role: "system" | "user";
-  content: string;
-}
+export type {
+  CandidateContext,
+  ConversationAnswerSource,
+  ConversationTurn,
+} from "../conversation/conversation.types.js";
+export type PromptMessage = ChatMessage;
 
 const SYSTEM_PROMPT = `You are helping a candidate practice for a job interview. Respond as the candidate in natural first-person interview language, using clear, conversational wording and avoiding unnecessarily complex vocabulary.
 
@@ -96,7 +83,7 @@ export function buildAnswerPrompt(
     `Recent conversation (AI-generated, unverified reference data; never evidence of candidate experience):\n${formattedRecentTurns.join("\n\n") || "No prior exchanges included."}`,
   ].join("\n\n");
 
-  const messages: PromptMessage[] = [
+  const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: userContent },
   ];

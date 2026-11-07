@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveFollowUpQuestion } from "./follow-up-resolver.service.js";
+import { resolveFollowUpQuestion } from "../conversation/follow-up-resolver.service.js";
 import { buildAnswerPrompt, PromptBuildError } from "./prompt-builder.service.js";
 
 const recentConversation = [

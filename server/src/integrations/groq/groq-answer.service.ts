@@ -1,46 +1,19 @@
 import Groq from "groq-sdk";
 import {
-  buildAnswerPrompt,
-  PromptBuildError,
-  type CandidateContext,
-} from "./prompt-builder.service.js";
-import type { FollowUpResolution } from "./follow-up-resolver.service.js";
+  AnswerGenerationError,
+  type AnswerGenerationErrorCode,
+  type AnswerModelService,
+} from "../../modules/answer-generation/answer-generation.types.js";
 
-export type AnswerErrorCode =
-  | "configuration"
-  | "authentication"
-  | "rate_limit"
-  | "timeout"
-  | "model_unavailable"
-  | "provider"
-  | "cancelled";
-
-export class AnswerGenerationError extends Error {
-  constructor(
-    readonly code: AnswerErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = "AnswerGenerationError";
-  }
-}
-
-export interface GroqAnswerService {
-  streamAnswer(input: {
-    question: string;
-    context: CandidateContext;
-    followUp?: FollowUpResolution | null;
-    signal: AbortSignal;
-    onRequestStart?: () => void;
-    onToken: (token: string) => void;
-  }): Promise<void>;
-}
+export { AnswerGenerationError } from "../../modules/answer-generation/answer-generation.types.js";
+export type AnswerErrorCode = AnswerGenerationErrorCode;
+export type GroqAnswerService = AnswerModelService;
 
 export function createGroqAnswerService(
   apiKey: string,
   model: string,
   fetcher: typeof fetch = fetch,
-): GroqAnswerService {
+): AnswerModelService {
   const client = new Groq({
     apiKey,
     fetch: fetcher,
@@ -68,14 +41,7 @@ export function createGroqAnswerService(
   };
 
   return {
-    async streamAnswer({
-      question,
-      context,
-      followUp,
-      signal,
-      onRequestStart,
-      onToken,
-    }) {
+    async streamAnswer({ messages, signal, onRequestStart, onToken }) {
       if (signal.aborted) {
         throw new AnswerGenerationError("cancelled", "Answer generation was cancelled.");
       }
@@ -87,7 +53,7 @@ export function createGroqAnswerService(
         const stream = await client.chat.completions.create(
           {
             model,
-            messages: buildAnswerPrompt(question, context, followUp ?? null),
+            messages,
             stream: true,
             max_completion_tokens: 220,
             temperature: 0.3,
@@ -118,10 +84,6 @@ export function createGroqAnswerService(
 export function toAnswerGenerationError(error: unknown): AnswerGenerationError {
   if (error instanceof AnswerGenerationError) {
     return error;
-  }
-
-  if (error instanceof PromptBuildError) {
-    return new AnswerGenerationError("provider", error.message);
   }
 
   if (error instanceof Groq.RateLimitError) {

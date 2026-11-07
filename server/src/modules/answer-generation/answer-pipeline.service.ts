@@ -1,14 +1,14 @@
 import { performance } from "node:perf_hooks";
 import {
   AnswerGenerationError,
-  toAnswerGenerationError,
-  type GroqAnswerService,
-} from "./groq-answer.service.js";
+  type AnswerModelService,
+} from "./answer-generation.types.js";
 import {
   InterviewSessionMemory,
   rememberAfterSuccessfulGeneration,
-} from "./interview-session-memory.service.js";
-import { resolveFollowUpQuestion } from "./follow-up-resolver.service.js";
+} from "../conversation/interview-session-memory.service.js";
+import { resolveFollowUpQuestion } from "../conversation/follow-up-resolver.service.js";
+import { PromptBuildError, buildAnswerPrompt } from "./prompt-builder.service.js";
 
 export type AnswerPipelineQuestion = {
   id: string;
@@ -103,7 +103,7 @@ export function cancelActiveAnswers(
 export async function runAnswerPipeline(input: {
   question: AnswerPipelineQuestion;
   memory: InterviewSessionMemory;
-  getService: () => GroqAnswerService;
+  getService: () => AnswerModelService;
   model: string;
   signal: AbortSignal;
   emit: (event: AnswerPipelineEvent) => void;
@@ -146,6 +146,7 @@ export async function runAnswerPipeline(input: {
       context.recentConversation,
     );
     input.validate?.();
+    const messages = buildAnswerPrompt(input.question.text, context, followUp);
 
     const service = input.getService();
     const markLlmRequestStarted = () => {
@@ -167,9 +168,7 @@ export async function runAnswerPipeline(input: {
       },
       () =>
         service.streamAnswer({
-          question: input.question.text,
-          context,
-          followUp,
+          messages,
           signal: input.signal,
           onRequestStart: markLlmRequestStarted,
           onToken: (token) => {
@@ -229,7 +228,15 @@ export async function runAnswerPipeline(input: {
       return "cancelled";
     }
 
-    const generationError = toAnswerGenerationError(error);
+    const generationError =
+      error instanceof AnswerGenerationError
+        ? error
+        : error instanceof PromptBuildError
+          ? new AnswerGenerationError("provider", error.message)
+          : new AnswerGenerationError(
+              "provider",
+              "Groq answer generation failed. Please try the question again.",
+            );
     input.emit({
       type: "answer:error",
       questionId: input.question.id,

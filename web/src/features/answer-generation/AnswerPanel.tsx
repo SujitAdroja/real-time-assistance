@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { GeneratedAnswer } from "@/hooks/useInterviewWebSocket";
+import type { GeneratedAnswer } from "@/types/interview";
 
 type AnswerPanelProps = {
   answers: GeneratedAnswer[];

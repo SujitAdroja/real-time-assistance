@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { ConnectionStatus, TranscriptSegment } from "@/hooks/useInterviewWebSocket";
-import type { RecordingStatus } from "@/components/RecordingControls";
+import type { ConnectionStatus, RecordingStatus, TranscriptSegment } from "@/types/interview";
 
 type TranscriptPanelProps = {
   segments: TranscriptSegment[];

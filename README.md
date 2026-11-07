@@ -10,9 +10,18 @@ A two-day proof of concept using a separate Next.js frontend and Express backend
 ## Project structure
 
 ```text
-web/       Next.js, React, TypeScript, and Tailwind CSS frontend
-server/    Express and TypeScript backend
+web/src/app/                 Next.js routes, page composition, and global styles
+web/src/components/ui/       Shared UI primitives
+web/src/features/            Recording, transcription, question, answer, context, and performance UI
+web/src/hooks/               Stateful WebSocket event handling
+web/src/types/               Shared frontend domain types
+server/src/config/           Environment loading and validated runtime config
+server/src/integrations/     Deepgram and Groq SDK adapters
+server/src/modules/          Interview business logic and colocated tests
+server/src/websocket/        Protocol types, server setup, and connection handlers
 ```
+
+The backend is a modular monolith: WebSocket transport depends on application modules, while provider SDKs stay behind integration adapters. Frontend panels are grouped by feature; reusable primitives live under `components/ui`. Backend tests stay next to the modules they cover.
 
 ## Install dependencies
 
@@ -108,7 +117,7 @@ Use the backend logs for provider connection errors. Live transcription scenario
 
 The backend runs a deterministic, rule-based classifier only after Deepgram marks transcript segments final and an utterance boundary arrives (`speech_final`, `UtteranceEnd`, or stream close). It joins finalized segments before classification and ignores interim results. Interview questions emit `question:detected`; every completed utterance also updates the panel's detection status. Small talk and non-question utterances are never shown as detected questions.
 
-The rule score is a fixed strength assigned to the matching rule (for example, explicit behavioral patterns score higher than a generic WH-question). It is not a statistical confidence or a probability. Classification patterns are maintained in `server/src/services/question-detection.service.ts`; the classifier has no Deepgram, WebSocket, or UI dependency. `QuestionDetectionSession` adapts its results to the backend WebSocket event protocol.
+The rule score is a fixed strength assigned to the matching rule (for example, explicit behavioral patterns score higher than a generic WH-question). It is not a statistical confidence or a probability. Classification patterns are maintained in `server/src/modules/question-detection/question-detection.service.ts`; the classifier has no Deepgram, WebSocket, or UI dependency. `QuestionDetectionSession` adapts its results to the backend WebSocket event protocol.
 
 Run the unit, completed-utterance, and WebSocket-event-adapter integration tests from the project root:
 
@@ -126,7 +135,7 @@ npm --prefix web run lint
 
 To manually verify the integrated pipeline, start the backend and frontend using the Module 3 commands, start a recording, then speak a complete interview question such as “How would you design a scalable API?” and pause. Confirm the final transcript remains visible, the detection status updates, and the question panel displays the question with its category. Then speak “Good morning” or “Okay, let's move ahead” and confirm the status reflects an ignored social exchange or statement without replacing the latest detected question. Partial requests such as “Can you explain…” should not trigger detection until a completed utterance is received, and incomplete speech should not appear as a detected question. Stop recording and repeat with a new session to verify state resets cleanly.
 
-This POC uses explainable patterns rather than an LLM; nuanced, compound, or context-dependent questions can be misclassified. Future improvements could add labeled evaluation examples, better utterance splitting, and optionally an LLM fallback for only ambiguous completed utterances. No answer generation is included.
+Question detection uses explainable patterns rather than an LLM; nuanced, compound, or context-dependent questions can be misclassified. Future improvements could add labeled evaluation examples, better utterance splitting, and optionally an LLM fallback for only ambiguous completed utterances.
 
 ## Module 5: Groq streaming answer generation
 
@@ -249,7 +258,7 @@ For manual verification, save resume/JD text before or during a live session and
 
 ### Architecture and data flow
 
-The browser captures microphone audio with `MediaRecorder` and sends binary chunks over the shared WebSocket. The backend forwards them to Deepgram, sends finalized transcript events through the existing question detector, and starts a per-question answer pipeline when `question:detected` fires. The pipeline snapshots that WebSocket's candidate context and completed conversation, resolves follow-ups, builds the bounded prompt through `GroqAnswerService`, forwards tokens under the same `questionId`, then stores only non-empty answers after successful completion. The dashboard updates each answer by ID and shows its generation status and metrics. WebSocket disconnect clears session memory; stopping recording cancels active answer generations but retains the WebSocket-scoped context for a later recording.
+The browser captures microphone audio with `MediaRecorder` and sends binary chunks over the shared WebSocket. The backend forwards them to Deepgram, sends finalized transcript events through the existing question detector, and starts a per-question answer pipeline when `question:detected` fires. The pipeline snapshots that WebSocket's candidate context and completed conversation, resolves follow-ups, builds the bounded prompt in the answer-generation module, and passes it to the Groq integration for streaming. Tokens retain the same `questionId`; only non-empty answers are stored after successful completion. The dashboard updates each answer by ID and shows its generation status and metrics. WebSocket disconnect clears session memory; stopping recording cancels active answer generations but retains the WebSocket-scoped context for a later recording.
 
 ### Latency metrics
 

@@ -48,12 +48,10 @@ test("validates the configured model and forwards streaming tokens progressively
   const tokens: string[] = [];
 
   await service.streamAnswer({
-    question: "What is RAG?",
-    context: {
-      resume: "Built an internal search service.",
-      jobDescription: "Backend engineer.",
-      recentConversation: [],
-    },
+    messages: [
+      { role: "system", content: "System instructions." },
+      { role: "user", content: "Built an internal search service." },
+    ],
     signal: new AbortController().signal,
     onToken: (token) => tokens.push(token),
   });
@@ -83,8 +81,10 @@ test("returns a clear model-unavailable error when the account cannot use the co
 
   await assert.rejects(
     service.streamAnswer({
-      question: "What is RAG?",
-      context: { resume: "", jobDescription: "", recentConversation: [] },
+      messages: [
+        { role: "system", content: "System instructions." },
+        { role: "user", content: "What is RAG?" },
+      ],
       signal: new AbortController().signal,
       onToken: () => {},
     }),
@@ -129,8 +129,10 @@ test("handles an invalid Groq API key without exposing provider response details
 
   await assert.rejects(
     service.streamAnswer({
-      question: "What is RAG?",
-      context: { resume: "", jobDescription: "", recentConversation: [] },
+      messages: [
+        { role: "system", content: "System instructions." },
+        { role: "user", content: "What is RAG?" },
+      ],
       signal: new AbortController().signal,
       onToken: () => {},
     }),
