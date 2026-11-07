@@ -59,12 +59,12 @@ export function RecordingControls({
   return (
     <section
       aria-label="Recording controls"
-      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6"
+      className="rounded-xl border border-slate-200 bg-white px-4 py-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)] sm:px-5"
     >
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <p className="text-sm font-semibold text-slate-900">Interview session</p>
-          <div className="mt-2 flex flex-wrap items-center gap-3">
+          <p className="text-xs font-medium text-slate-500">Recording</p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-3">
             <StatusIndicator
               label="Microphone"
               status={getRecordingLabel(status)}
@@ -72,16 +72,16 @@ export function RecordingControls({
             />
             <p
               aria-label={`Session duration ${formatDuration(durationSeconds)}`}
-              className="font-mono text-lg font-semibold tabular-nums text-slate-800"
+              className="font-mono text-base font-semibold tabular-nums text-slate-800"
             >
               {formatDuration(durationSeconds)}
             </p>
           </div>
         </div>
 
-        <div className="flex w-full gap-3 sm:w-auto">
+        <div className="flex w-full gap-2 sm:w-auto">
           <button
-            className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:flex-none"
+            className="inline-flex min-h-10 flex-1 items-center justify-center gap-2 rounded-md bg-indigo-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:flex-none"
             disabled={!canStart || status !== "idle"}
             onClick={onStart}
             type="button"
@@ -99,7 +99,7 @@ export function RecordingControls({
             )}
           </button>
           <button
-            className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500 disabled:cursor-not-allowed disabled:text-slate-400 sm:flex-none"
+            className="inline-flex min-h-10 flex-1 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500 disabled:cursor-not-allowed disabled:text-slate-400 sm:flex-none"
             disabled={status !== "recording"}
             onClick={onStop}
             type="button"
@@ -110,8 +110,8 @@ export function RecordingControls({
         </div>
       </div>
 
-      <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4 text-xs text-slate-500">
-        <p>Audio is streamed securely through the backend to transcription.</p>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 text-[11px] text-slate-500">
+        <p>Audio streams through the backend for transcription.</p>
         {mimeType && <p className="font-mono">Audio format: {mimeType}</p>}
       </div>
 

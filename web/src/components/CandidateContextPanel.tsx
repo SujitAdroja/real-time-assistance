@@ -55,11 +55,18 @@ export function CandidateContextPanel({
   })();
 
   return (
-    <details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <summary className="cursor-pointer font-semibold text-slate-900">
-        Candidate context (optional)
+    <details className="group rounded-xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+      <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 marker:hidden focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700 sm:px-5 [&::-webkit-details-marker]:hidden">
+        <span>
+          <span className="block text-sm font-semibold text-slate-900">Candidate context</span>
+          <span className="mt-0.5 block text-xs text-slate-500">Optional resume and role details for more relevant answers</span>
+        </span>
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-slate-200 text-slate-500 transition group-open:rotate-180" aria-hidden="true">
+          <svg viewBox="0 0 20 20" fill="none" className="size-4" stroke="currentColor" strokeWidth="1.7"><path strokeLinecap="round" strokeLinejoin="round" d="m5 7.5 5 5 5-5" /></svg>
+        </span>
       </summary>
-      <p className="mt-3 text-sm text-slate-600">
+      <div className="border-t border-slate-100 px-4 py-4 sm:px-5">
+      <p className="text-xs leading-5 text-slate-500">
         Resume and job description text are sent to the backend for this
         WebSocket session only. They stay in backend memory and are cleared when
         that session ends. Each field can contain up to{" "}
@@ -68,7 +75,7 @@ export function CandidateContextPanel({
       <form className="mt-4 space-y-4" onSubmit={saveContext}>
         <div>
           <div className="flex items-center justify-between gap-2">
-            <label className="block text-sm font-medium text-slate-700" htmlFor="candidate-resume">
+            <label className="block text-xs font-semibold text-slate-700" htmlFor="candidate-resume">
               Resume
             </label>
             <span className="text-xs tabular-nums text-slate-500">
@@ -77,7 +84,7 @@ export function CandidateContextPanel({
           </div>
           <textarea
             aria-describedby="candidate-context-status"
-            className="mt-1 min-h-32 w-full rounded-lg border border-slate-300 p-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700"
+            className="mt-1 min-h-28 w-full rounded-md border border-slate-300 bg-white p-3 text-sm leading-6 placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700"
             id="candidate-resume"
             maxLength={MAX_CONTEXT_CHARS}
             onChange={(event) => {
@@ -90,7 +97,7 @@ export function CandidateContextPanel({
         </div>
         <div>
           <div className="flex items-center justify-between gap-2">
-            <label className="block text-sm font-medium text-slate-700" htmlFor="job-description">
+            <label className="block text-xs font-semibold text-slate-700" htmlFor="job-description">
               Job description
             </label>
             <span className="text-xs tabular-nums text-slate-500">
@@ -99,7 +106,7 @@ export function CandidateContextPanel({
           </div>
           <textarea
             aria-describedby="candidate-context-status"
-            className="mt-1 min-h-32 w-full rounded-lg border border-slate-300 p-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700"
+            className="mt-1 min-h-28 w-full rounded-md border border-slate-300 bg-white p-3 text-sm leading-6 placeholder:text-slate-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700"
             id="job-description"
             maxLength={MAX_CONTEXT_CHARS}
             onChange={(event) => {
@@ -112,13 +119,13 @@ export function CandidateContextPanel({
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <button
-            className="rounded-lg bg-slate-800 px-4 py-2 font-semibold text-white hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-700"
+            className="min-h-9 rounded-md bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-700"
             type="submit"
           >
             Save context
           </button>
           <button
-            className="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500"
+            className="min-h-9 rounded-md border border-slate-300 px-3.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500"
             onClick={clearContext}
             type="button"
           >
@@ -126,7 +133,7 @@ export function CandidateContextPanel({
           </button>
           <p
             aria-live="polite"
-            className={`text-sm ${displayedStatus === "error" ? "text-rose-700" : "text-slate-600"}`}
+            className={`text-xs ${displayedStatus === "error" ? "text-rose-700" : "text-slate-600"}`}
             id="candidate-context-status"
             role={displayedStatus === "error" ? "alert" : "status"}
           >
@@ -134,6 +141,7 @@ export function CandidateContextPanel({
           </p>
         </div>
       </form>
+      </div>
     </details>
   );
 }

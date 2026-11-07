@@ -38,43 +38,43 @@ export function DetectedQuestionPanel({
   return (
     <section
       aria-live="polite"
-      className="rounded-2xl border border-indigo-200 bg-indigo-50/80 p-5 shadow-sm sm:p-6"
+      className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
       aria-label="Detected interview question"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-slate-900">
-          Interview question
-        </h2>
-        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-indigo-800">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-5 py-4">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.13em] text-indigo-700">Detected question</p>
+          <h2 className="mt-1 text-sm font-semibold text-slate-950">Interview question</h2>
+        </div>
+        <span className="rounded-md bg-slate-50 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 ring-1 ring-inset ring-slate-200">
           {getDetectionStatus(status)}
         </span>
-      </div>
+      </header>
 
       {question ? (
-        <div className="mt-4">
-          <p className="text-base font-medium leading-7 text-slate-950">
+        <div className="px-5 py-4">
+          <p className="border-l-2 border-indigo-600 pl-3 text-sm font-medium leading-6 text-slate-900">
             {question.text}
           </p>
-          <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm text-slate-600">
-            <div>
-              <dt className="inline font-medium">Category: </dt>
-              <dd className="inline capitalize">{question.category}</dd>
+          <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-500">
+            <div className="flex gap-1">
+              <dt>Category</dt>
+              <dd className="font-medium capitalize text-slate-700">{question.category}</dd>
             </div>
-            <div>
-              <dt className="inline font-medium">Detected: </dt>
-              <dd className="inline">
+            <div className="flex gap-1">
+              <dt>Detected</dt>
+              <dd className="font-medium text-slate-700">
                 {new Date(question.detectedAt).toLocaleTimeString()}
               </dd>
             </div>
           </dl>
         </div>
       ) : (
-        <p className="mt-4 rounded-xl border border-dashed border-indigo-200 bg-white/70 px-4 py-6 text-sm leading-6 text-slate-600">
-          A completed interview question will appear here. Greetings and other
-          small talk are filtered out.
+        <p className="mx-5 my-4 rounded-lg border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-sm leading-6 text-slate-500">
+          A detected interview question will appear here. Greetings and small talk are filtered out.
         </p>
       )}
-      {status && <p className="mt-3 text-sm text-slate-600">{status.reason}</p>}
+      {status && <p className="px-5 pb-4 text-xs leading-5 text-slate-500">{status.reason}</p>}
     </section>
   );
 }

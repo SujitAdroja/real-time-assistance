@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnswerPanel } from "@/components/AnswerPanel";
 import { CandidateContextPanel } from "@/components/CandidateContextPanel";
 import { DetectedQuestionPanel } from "@/components/DetectedQuestionPanel";
+import { PerformanceMetrics } from "@/components/PerformanceMetrics";
 import { RecordingControls, type RecordingStatus } from "@/components/RecordingControls";
 import { StatusIndicator } from "@/components/StatusIndicator";
 import { TranscriptPanel } from "@/components/TranscriptPanel";
@@ -31,22 +32,6 @@ function getMicrophoneError(error: unknown): string {
   }
 
   return "Unable to start microphone recording. Check the browser console for details.";
-}
-
-function getStatusTone(status: string): "success" | "warning" | "error" | "neutral" {
-  if (status === "connected" || status === "ready") {
-    return "success";
-  }
-
-  if (status === "connecting") {
-    return "warning";
-  }
-
-  if (status === "error") {
-    return "error";
-  }
-
-  return "neutral";
 }
 
 function formatStatus(status: string): string {
@@ -265,62 +250,60 @@ export default function Home() {
   );
 
   const canStart = recordingStatus === "idle" && connectionStatus !== "connecting";
+  const liveStatus = isRecording
+    ? "Recording"
+    : isConnecting
+      ? "Connecting"
+      : connectionStatus === "error" || connectionStatus === "disconnected"
+        ? "Disconnected"
+        : "Ready";
+  const liveTone = isRecording
+    ? "success"
+    : isConnecting
+      ? "warning"
+      : connectionStatus === "error" || connectionStatus === "disconnected"
+        ? "error"
+        : "neutral";
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
-          <div className="flex items-center gap-3">
-            <span
-              aria-hidden="true"
-              className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-700 text-sm font-bold tracking-wide text-white shadow-sm"
-            >
-              IA
-            </span>
-            <div>
-              <p className="text-sm font-bold tracking-tight text-slate-950">
-                Interview Assistant
-              </p>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Real-time interview workspace
-              </p>
+    <main className="min-h-screen bg-[#f5f6f8] text-slate-900">
+      <header className="sticky top-0 z-20 border-b border-slate-200/90 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex min-h-16 max-w-[1440px] items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-3">
+            <span aria-hidden="true" className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-indigo-700 text-xs font-bold tracking-tight text-white">IA</span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold tracking-tight text-slate-950">Interview Assistant</p>
+              <p className="hidden text-xs text-slate-500 sm:block">Live interview workspace</p>
             </div>
           </div>
-
-          <div className="flex flex-wrap gap-2">
-            <StatusIndicator
-              label="Backend"
-              status={formatStatus(connectionStatus)}
-              tone={getStatusTone(connectionStatus)}
-            />
-            <StatusIndicator
-              label="Transcription"
-              status={formatStatus(sttStatus)}
-              tone={getStatusTone(sttStatus)}
-            />
+          <div className="flex items-center gap-3 sm:gap-5">
+            <div className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
+              <span className="size-1.5 rounded-full bg-slate-300" aria-hidden="true" />
+              Backend <span className="font-medium text-slate-700">{formatStatus(connectionStatus)}</span>
+            </div>
+            <div className="hidden items-center gap-2 text-xs text-slate-500 md:flex">
+              <span className="size-1.5 rounded-full bg-slate-300" aria-hidden="true" />
+              Transcription <span className="font-medium text-slate-700">{formatStatus(sttStatus)}</span>
+            </div>
+            <StatusIndicator label="Session" status={liveStatus} tone={liveTone} />
+            <span className="hidden border-l border-slate-200 pl-4 font-mono text-sm font-medium tabular-nums text-slate-700 sm:inline" aria-label={`Session duration ${Math.floor(sessionDurationSeconds / 60).toString().padStart(2, "0")}:${(sessionDurationSeconds % 60).toString().padStart(2, "0")}`}>
+              {Math.floor(sessionDurationSeconds / 60).toString().padStart(2, "0")}:{(sessionDurationSeconds % 60).toString().padStart(2, "0")}
+            </span>
           </div>
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-4 py-7 sm:px-6 sm:py-9 lg:px-8">
-        <section className="mb-6 flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+      <div className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+        <section className="mb-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-700">
-              Interview session
-            </p>
-            <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
-              Your live interview workspace
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
-              Follow the conversation, review detected questions, and see suggested answers as they stream.
-            </p>
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-indigo-700">Interview session</p>
+            <h1 className="mt-1.5 text-2xl font-semibold tracking-tight text-slate-950 sm:text-[1.75rem]">Live assistance</h1>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">Follow the conversation and review suggested answers as they’re generated.</p>
           </div>
-          <p className="max-w-sm text-xs leading-5 text-slate-500">
-            Keep this dashboard open during your practice session. Audio and answer generation are handled by your backend.
-          </p>
+          <p className="text-xs text-slate-500">Your session is processed through the connected backend.</p>
         </section>
 
-        <div className="space-y-6">
+        <div className="space-y-4">
           <RecordingControls
             canStart={canStart}
             durationSeconds={sessionDurationSeconds}
@@ -338,13 +321,18 @@ export default function Home() {
             status={recordingStatus}
           />
 
-          <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+          <PerformanceMetrics answers={answers} />
+
+          <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.04fr)_minmax(390px,0.96fr)]">
             <TranscriptPanel
+              connectionStatus={connectionStatus}
               interimTranscript={interimTranscript}
+              recordingStatus={recordingStatus}
               segments={finalTranscripts}
+              sttStatus={sttStatus}
             />
 
-            <div className="space-y-6">
+            <div className="space-y-4">
               <DetectedQuestionPanel
                 question={detectedQuestion}
                 status={questionDetectionStatus}
@@ -362,11 +350,7 @@ export default function Home() {
           />
         </div>
 
-        {isConnecting && (
-          <p aria-live="polite" className="sr-only">
-            Connecting to the interview session.
-          </p>
-        )}
+        {isConnecting && <p aria-live="polite" className="sr-only">Connecting to the interview session.</p>}
       </div>
     </main>
   );
