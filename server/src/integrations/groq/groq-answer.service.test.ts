@@ -9,7 +9,7 @@ import {
 
 const MODEL = "openai/gpt-oss-20b";
 
-function createSseResponse(chunks: string[]): Response {
+function createSseResponse(chunks: string[], finishReason: string | null = null): Response {
   const messages = chunks
     .map((content) => {
       const payload = {
@@ -22,8 +22,17 @@ function createSseResponse(chunks: string[]): Response {
       return `data: ${JSON.stringify(payload)}\n\n`;
     })
     .join("");
+  const finalMessage = finishReason
+    ? `data: ${JSON.stringify({
+        id: "completion-1",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: MODEL,
+        choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+      })}\n\n`
+    : "";
 
-  return new Response(`${messages}data: [DONE]\n\n`, {
+  return new Response(`${messages}${finalMessage}data: [DONE]\n\n`, {
     headers: { "content-type": "text/event-stream" },
   });
 }
@@ -63,12 +72,44 @@ test("validates the configured model and forwards streaming tokens progressively
     model: string;
     stream: boolean;
     max_completion_tokens: number;
+    reasoning_effort?: string;
+    include_reasoning?: boolean;
     messages: Array<{ role: string; content: string }>;
   };
   assert.equal(request.model, MODEL);
   assert.equal(request.stream, true);
-  assert.ok(request.max_completion_tokens <= 250);
+  assert.equal(request.max_completion_tokens, 700);
+  assert.equal(request.reasoning_effort, "low");
+  assert.equal(request.include_reasoning, false);
   assert.match(request.messages[1]?.content ?? "", /Built an internal search service/);
+});
+
+test("reports a completion stopped by the model output limit", async () => {
+  const fetcher: typeof fetch = async (input) =>
+    String(input).endsWith("/models")
+      ? Response.json({
+          object: "list",
+          data: [{ id: MODEL, object: "model", created: 1, owned_by: "groq" }],
+        })
+      : createSseResponse(["A partial answer"], "length");
+  const service = createGroqAnswerService("test-key", MODEL, fetcher);
+  const tokens: string[] = [];
+
+  await assert.rejects(
+    service.streamAnswer({
+      messages: [
+        { role: "system", content: "System instructions." },
+        { role: "user", content: "What is RAG?" },
+      ],
+      signal: new AbortController().signal,
+      onToken: (token) => tokens.push(token),
+    }),
+    (error: unknown) =>
+      error instanceof AnswerGenerationError &&
+      error.message.includes("output limit") &&
+      error.code === "provider",
+  );
+  assert.deepEqual(tokens, ["A partial answer"]);
 });
 
 test("returns a clear model-unavailable error when the account cannot use the configured model", async () => {

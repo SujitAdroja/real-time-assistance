@@ -55,8 +55,11 @@ export function createGroqAnswerService(
             model,
             messages,
             stream: true,
-            max_completion_tokens: 220,
+            max_completion_tokens: 700,
             temperature: 0.3,
+            ...(model.startsWith("openai/gpt-oss-")
+              ? { reasoning_effort: "low" as const, include_reasoning: false }
+              : {}),
           },
           { signal },
         );
@@ -69,6 +72,13 @@ export function createGroqAnswerService(
           const content = chunk.choices[0]?.delta.content;
           if (typeof content === "string" && content.length > 0) {
             onToken(content);
+          }
+
+          if (chunk.choices[0]?.finish_reason === "length") {
+            throw new AnswerGenerationError(
+              "provider",
+              "The answer reached the model's output limit and may be incomplete. Please try the question again.",
+            );
           }
         }
       } catch (error) {
